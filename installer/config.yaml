@@ -123,6 +123,10 @@ steps:
     # launches anomaly/bin/AnomalyDX11AVX.exe directly (hardcoded in main.py, not through MO2)
     # user closes the game once they've confirmed the modded exe works, then continues
 
+  - name: delete_shader_cache
+    action: delete
+    dir: "../anomaly/appdata/shaders_cache/r4"
+
   - name: install_zona
     action: extract
     file: "downloads/zona_multipart.7z.001"

@@ -225,9 +225,40 @@ def _run_extract_step(step: dict, ctx: dict, on_progress: ProgressCallback = Non
         extract_archive(ROOT / "downloads" / asset["file"], ROOT / step["target"], on_progress=on_progress)
 
 
+def _run_delete_step(step: dict, ctx: dict, on_progress: ProgressCallback = None) -> None:
+    """Delete files or directories specified in 'dir' or 'file' keys."""
+    paths_to_delete = []
+    
+    if "dir" in step:
+        dirs = step["dir"] if isinstance(step["dir"], list) else [step["dir"]]
+        paths_to_delete.extend(dirs)
+    
+    if "file" in step:
+        files = step["file"] if isinstance(step["file"], list) else [step["file"]]
+        paths_to_delete.extend(files)
+    
+    for path_str in paths_to_delete:
+        path = ROOT / path_str
+        if not path.exists():
+            log("debug", f"Path does not exist (skipping): {path}")
+            continue
+        
+        try:
+            if path.is_dir():
+                log("info", f"Deleting directory: {path}")
+                shutil.rmtree(path)
+            else:
+                log("info", f"Deleting file: {path}")
+                path.unlink()
+        except Exception as e:
+            log("error", f"Failed to delete {path}: {e}")
+            raise
+
+
 STEP_HANDLERS: dict[str, Callable[[dict, dict, ProgressCallback], None]] = {
     "create_dir": lambda step, ctx, on_progress: create_dirs(step["dir"]),
     "extract": _run_extract_step,
+    "delete": _run_delete_step,
 }
 
 
