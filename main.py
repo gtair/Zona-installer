@@ -1,11 +1,14 @@
 import configparser
 import queue
+import re
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
 import downloader
+
+MULTIPART_RE = re.compile(r"^(.*)\.(\d{3,})$")
 
 CONFIG_PATH = Path(__file__).parent / "config.ini"
 DOWNLOADS_DIR = Path(__file__).parent / "downloads"
@@ -64,6 +67,53 @@ def get_downloads_for_selection(parser, selection):
 def get_description(parser, path_parts):
     """Return the optional description for the selected path."""
     return parser.get("descriptions", "/".join(path_parts), fallback="")
+
+
+def group_manifest(manifest):
+    """Group numbered archive parts (e.g. .001, .002) sharing a common base name."""
+    groups = {}
+    order = []
+    for _, dest, expected_hash in manifest:
+        match = MULTIPART_RE.match(dest.name)
+        key = match.group(1) if match else dest.name
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append((dest.name, expected_hash))
+
+    result = []
+    for key in order:
+        members = groups[key]
+        if len(members) > 1:
+            names = sorted(name for name, _ in members)
+            nums = [MULTIPART_RE.match(name).group(2) for name in names]
+            label = f"{key}.{nums[0]}-{nums[-1]}"
+            result.append({"type": "group", "label": label, "members": members})
+        else:
+            name, expected_hash = members[0]
+            result.append({"type": "single", "name": name, "expected_hash": expected_hash})
+    return result
+
+
+def describe_item(item):
+    """Return (percent, text, is_error) describing a single file's progress payload."""
+    status = item["status"]
+    if status == "complete":
+        message = "Done - SHA-256 verified" if item.get("hash_valid") else "Done - hash not configured"
+        return 100, message, False
+    if status == "error":
+        return item["percent"], "Error: " + item["error"], True
+    if status == "waiting":
+        return item["percent"], item.get("error") or f"Queued - {item['percent']:.0f}%", False
+    if status == "paused":
+        return item["percent"], f"Paused - {item['percent']:.0f}%", False
+    if status == "resolving":
+        return item["percent"], "Generating ModDB download link...", False
+    if status == "validating":
+        return item["percent"], "Verifying SHA-256...", False
+    speed = downloader.format_speed(item["speed"])
+    activity = "Downloading" if item["speed"] else "Connecting or retrying"
+    return item["percent"], f"{activity} - {item['percent']:.0f}% - {speed}", False
 
 
 CONFIG = load_config()
@@ -219,6 +269,34 @@ class FileProgressRow(ttk.Frame):
         self.status_label.config(text=status_text)
 
 
+class GroupProgressRow(ttk.Frame):
+    """A combined progress bar for numbered archive parts, with per-part detail lines."""
+
+    def __init__(self, master, label, member_names):
+        super().__init__(master)
+        ttk.Label(self, text=label).pack(anchor="w")
+        self.progress = ttk.Progressbar(self, orient="horizontal", length=350, mode="determinate")
+        self.progress.pack(fill="x", pady=(2, 0))
+        self.member_labels = {}
+        self.percents = {}
+        for name in member_names:
+            self.percents[name] = 0.0
+            label_widget = ttk.Label(self, text=f"{name}: Preparing download...", style="MutedSmall.TLabel")
+            label_widget.pack(anchor="w")
+            self.member_labels[name] = label_widget
+
+    def update_member(self, name, percent, text, is_error):
+        self.percents[name] = percent
+        self.member_labels[name].config(text=f"{name}: {text}")
+        if is_error:
+            self.progress.configure(style="Error.Horizontal.TProgressbar")
+        self.progress["value"] = sum(self.percents.values()) / len(self.percents)
+
+    def mark_error(self, status_text):
+        self.progress.configure(style="Error.Horizontal.TProgressbar")
+        self.progress["value"] = 100
+
+
 class ProgressFrame(ttk.Frame):
     def __init__(self, master, selection, manifest):
         super().__init__(master, padding=20)
@@ -229,12 +307,27 @@ class ProgressFrame(ttk.Frame):
         self.rows_scroll = ScrollableFrame(self)
         self.rows_scroll.pack(fill="both", expand=True)
 
-        self.rows = {}
-        for index, (_, dest, expected_hash) in enumerate(manifest):
-            row = FileProgressRow(self.rows_scroll.inner, dest.name, expected_hash)
-            self.rows[dest.name] = row
+        self.total_files = len(manifest)
+        self.all_rows = []
+        self.single_rows = {}
+        self.group_rows = {}
+        self.member_to_group = {}
+
+        grouped = group_manifest(manifest)
+        for index, entry in enumerate(grouped):
+            if entry["type"] == "group":
+                names = sorted(name for name, _ in entry["members"])
+                row = GroupProgressRow(self.rows_scroll.inner, entry["label"], names)
+                self.group_rows[entry["label"]] = row
+                for name in names:
+                    self.member_to_group[name] = entry["label"]
+            else:
+                row = FileProgressRow(self.rows_scroll.inner, entry["name"], entry["expected_hash"])
+                self.single_rows[entry["name"]] = row
+
+            self.all_rows.append(row)
             row.pack(fill="x", pady=(0, 10))
-            if index < len(manifest) - 1:
+            if index < len(grouped) - 1:
                 ttk.Separator(self.rows_scroll.inner, orient="horizontal").pack(fill="x", pady=(0, 10))
 
         self.overall_label = ttk.Label(self, text="Starting...")
@@ -243,37 +336,25 @@ class ProgressFrame(ttk.Frame):
     def update_progress(self, items):
         done = 0
         for item in items:
-            row = self.rows.get(item["name"])
-            if row is None:
-                continue
-
-            status = item["status"]
-            if status == "complete":
-                message = "Done - SHA-256 verified" if item.get("hash_valid") else "Done - hash not configured"
-                row.update_status(100, message)
+            name = item["name"]
+            percent, text, is_error = describe_item(item)
+            if item["status"] == "complete":
                 done += 1
-            elif status == "error":
-                row.mark_error("Error: " + item["error"])
-            elif status == "waiting":
-                row.update_status(item["percent"], item.get("error") or f"Queued - {item['percent']:.0f}%")
-            elif status == "paused":
-                row.update_status(item["percent"], f"Paused - {item['percent']:.0f}%")
-            elif status == "resolving":
-                row.update_status(item["percent"], "Generating ModDB download link...")
-            elif status == "validating":
-                row.update_status(item["percent"], "Verifying SHA-256...")
-            else:
-                speed = downloader.format_speed(item["speed"])
-                activity = "Downloading" if item["speed"] else "Connecting or retrying"
-                row.update_status(item["percent"], f"{activity} - {item['percent']:.0f}% - {speed}")
 
-        self.overall_label.config(text=f"{done}/{len(self.rows)} files complete")
+            if name in self.single_rows:
+                self.single_rows[name].update_status(percent, text)
+                if is_error:
+                    self.single_rows[name].mark_error(text)
+            elif name in self.member_to_group:
+                self.group_rows[self.member_to_group[name]].update_member(name, percent, text, is_error)
+
+        self.overall_label.config(text=f"{done}/{self.total_files} files complete")
 
     def mark_done(self):
         self.overall_label.config(text="Download complete!")
 
     def mark_failed(self, message):
-        for row in self.rows.values():
+        for row in self.all_rows:
             if row.progress["value"] < 100:
                 row.mark_error("Error: " + message)
         self.overall_label.config(text="Download failed")
