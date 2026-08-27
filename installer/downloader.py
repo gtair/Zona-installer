@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 from log_custom import log
 from win_job import close_job, create_kill_on_close_job
 
-ARIA2C_PATH = Path(__file__).parent / "aria" / "aria2c.exe"
+ARIA2C_PATH = Path(__file__).parent / "dependencies" / "aria2c.exe"
 MAX_HASH_RETRIES = 3
 
 

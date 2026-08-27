@@ -24,6 +24,7 @@ StepCallback = Optional[Callable[[dict], None]]
 ProgressCallback = Optional[Callable[[int, Optional[str]], None]]
 
 _SEVEN_ZIP_CANDIDATES = [
+    r"dependencies/7z.exe",  # portable 7z in project dependencies
     r"C:\Program Files\7-Zip\7z.exe",
     r"C:\Program Files (x86)\7-Zip\7z.exe",
 ]
