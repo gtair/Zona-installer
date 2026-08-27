@@ -1,6 +1,5 @@
 ﻿"""Download batches via the bundled aria2c JSON-RPC client."""
 
-import ctypes
 import hashlib
 import json
 import os
@@ -15,6 +14,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 from urllib.parse import urlparse
+
+from log_custom import log
+from win_job import close_job, create_kill_on_close_job
 
 ARIA2C_PATH = Path(__file__).parent / "aria" / "aria2c.exe"
 MAX_HASH_RETRIES = 3
@@ -31,6 +33,7 @@ def resolve_moddb_url(url: str) -> str:
     if not _is_moddb_url(url) or "/downloads/mirror/" in url:
         return url
 
+    log("debug", f"Resolving ModDB mirror for {url}")
     try:
         from curl_cffi import requests
     except ImportError as exc:
@@ -52,73 +55,8 @@ def resolve_moddb_url(url: str) -> str:
     match = re.search(r"(https://www\.moddb\.com/downloads/mirror/\d+/\d+/[a-f0-9]+)", response.text)
     if not match:
         raise RuntimeError(f"No ModDB mirror link found on {response.url}")
+    log("debug", f"Resolved ModDB mirror: {match.group(1)}")
     return match.group(1)
-
-
-def _create_kill_on_close_job(process):
-    if os.name != "nt":
-        return None
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
-    kernel32.CreateJobObjectW.restype = ctypes.c_void_p
-    kernel32.SetInformationJobObject.argtypes = [
-        ctypes.c_void_p,
-        ctypes.c_int,
-        ctypes.c_void_p,
-        ctypes.c_uint32,
-    ]
-    kernel32.AssignProcessToJobObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-
-    job = kernel32.CreateJobObjectW(None, None)
-    if not job:
-        raise OSError(ctypes.get_last_error(), "could not create aria2 job")
-
-    class BasicLimitInformation(ctypes.Structure):
-        _fields_ = [
-            ("PerProcessUserTimeLimit", ctypes.c_longlong),
-            ("PerJobUserTimeLimit", ctypes.c_longlong),
-            ("LimitFlags", ctypes.c_uint32),
-            ("MinimumWorkingSetSize", ctypes.c_size_t),
-            ("MaximumWorkingSetSize", ctypes.c_size_t),
-            ("ActiveProcessLimit", ctypes.c_uint32),
-            ("Affinity", ctypes.c_size_t),
-            ("PriorityClass", ctypes.c_uint32),
-            ("SchedulingClass", ctypes.c_uint32),
-        ]
-
-    class IoCounters(ctypes.Structure):
-        _fields_ = [("values", ctypes.c_ulonglong * 6)]
-
-    class ExtendedLimitInformation(ctypes.Structure):
-        _fields_ = [
-            ("BasicLimitInformation", BasicLimitInformation),
-            ("IoInfo", IoCounters),
-            ("ProcessMemoryLimit", ctypes.c_size_t),
-            ("JobMemoryLimit", ctypes.c_size_t),
-            ("PeakProcessMemoryUsed", ctypes.c_size_t),
-            ("PeakJobMemoryUsed", ctypes.c_size_t),
-        ]
-
-    limits = ExtendedLimitInformation()
-    limits.BasicLimitInformation.LimitFlags = 0x2000
-
-    if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
-        kernel32.CloseHandle(job)
-        raise OSError(ctypes.get_last_error(), "could not configure aria2 job")
-    if not kernel32.AssignProcessToJobObject(job, ctypes.c_void_p(process._handle)):
-        kernel32.CloseHandle(job)
-        raise OSError(ctypes.get_last_error(), "could not assign aria2 to job")
-    return job
-
-
-def _close_job(job):
-    if not job:
-        return
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    kernel32.CloseHandle(job)
 
 
 @dataclass
@@ -162,6 +100,7 @@ class Aria2Client:
         if self.process is not None:
             return
 
+        log("info", f"Starting aria2c on rpc port {self.rpc_port}")
         args = [
             str(ARIA2C_PATH),
             "--enable-rpc",
@@ -192,13 +131,15 @@ class Aria2Client:
             creationflags=creationflags,
         )
         try:
-            self._job = _create_kill_on_close_job(self.process)
+            self._job = create_kill_on_close_job(self.process)
         except Exception:
+            log("error", "Failed to attach aria2c to a job object, killing process")
             self.process.kill()
             self.process.wait()
             self.process = None
             raise
         self._wait_until_ready()
+        log("info", "aria2c is ready")
 
     def _wait_until_ready(self, timeout: float = 10.0):
         deadline = time.time() + timeout
@@ -257,6 +198,7 @@ class Aria2Client:
     def shutdown(self):
         if self.process is None:
             return
+        log("info", "Shutting down aria2c")
         try:
             self.call("aria2.shutdown")
         except Exception:
@@ -264,9 +206,10 @@ class Aria2Client:
         try:
             self.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
+            log("warning", "aria2c did not exit cleanly, killing it")
             self.process.kill()
         self.process = None
-        _close_job(self._job)
+        close_job(self._job)
         self._job = None
 
 
@@ -290,19 +233,22 @@ class Downloader:
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
-        return digest.hexdigest() == expected_hash
+        return digest.hexdigest() == expected_hash.lower()
 
     def _skip_existing_files(self):
         for item in self.items:
             if self._matches_hash(item.dest_path, item.expected_hash):
+                log("info", f"{item.dest_path.name}: already present with a matching hash, skipping download")
                 item.status = "complete"
 
     def _retry_after_hash_mismatch(self, item: DownloadItem):
         if item.hash_retries >= MAX_HASH_RETRIES:
+            log("error", f"{item.dest_path.name}: hash validation failed after {MAX_HASH_RETRIES} retries")
             item.status = "error"
             item.error_message = "download failed hash validation after retries"
             return
 
+        log("warning", f"{item.dest_path.name}: hash mismatch, retrying ({item.hash_retries + 1}/{MAX_HASH_RETRIES})")
         try:
             if item.dest_path.exists():
                 item.dest_path.unlink()
@@ -323,6 +269,7 @@ class Downloader:
             item.status = "waiting"
             item.error_message = f"Hash mismatch - retrying ({item.hash_retries}/{MAX_HASH_RETRIES})"
         except Exception as exc:
+            log("error", f"{item.dest_path.name}: could not requeue after hash mismatch: {exc}")
             item.status = "error"
             item.error_message = f"could not replace invalid download: {exc}"
 
@@ -330,9 +277,11 @@ class Downloader:
         """Launch aria2, queue each item, and poll until all downloads finish."""
         self._skip_existing_files()
         if self._all_done():
+            log("info", "All files already present with valid hashes, nothing to download")
             self.on_update(self.items)
             return
 
+        log("info", f"Starting download batch: {len(self.items)} item(s)")
         try:
             self.client.start()
             for item in self.items:
@@ -345,6 +294,7 @@ class Downloader:
                 resolved_url = resolve_moddb_url(item.url)
                 item.gid = self.client.add_uri(resolved_url, item.dest_path.parent, item.dest_path.name)
                 item.status = "waiting"
+                log("debug", f"{item.dest_path.name}: queued (gid={item.gid})")
 
             while not self._all_done():
                 self._poll_once()
@@ -352,6 +302,7 @@ class Downloader:
                 time.sleep(self.poll_interval)
             self._poll_once()
             self.on_update(self.items)
+            log("info", "Download batch finished")
         finally:
             self.client.shutdown()
 
@@ -362,6 +313,7 @@ class Downloader:
             try:
                 status = self.client.tell_status(item.gid)
             except Exception as exc:
+                log("error", f"{item.dest_path.name}: lost contact with aria2c: {exc}")
                 item.status = "error"
                 item.error_message = str(exc)
                 continue
@@ -379,8 +331,10 @@ class Downloader:
                 if item.expected_hash and not self._matches_hash(item.dest_path, item.expected_hash):
                     self._retry_after_hash_mismatch(item)
                 else:
+                    log("info", f"{item.dest_path.name}: download complete")
                     item.status = "complete"
             elif aria_status == "error":
+                log("error", f"{item.dest_path.name}: {status.get('errorMessage', 'download failed')}")
                 item.status = "error"
                 item.error_message = status.get("errorMessage", "download failed")
             elif aria_status in {"active", "waiting", "paused"}:
@@ -412,4 +366,9 @@ def download_all(
         expected_hash = download[2] if len(download) > 2 else None
         downloader.add(url, dest_path, expected_hash)
     downloader.run()
+    failed = [item.dest_path.name for item in downloader.items if item.status != "complete"]
+    if failed:
+        log("warning", f"download_all finished with failures: {failed}")
+    else:
+        log("info", f"download_all finished, all {len(downloader.items)} item(s) complete")
     return downloader.items

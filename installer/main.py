@@ -1,72 +1,42 @@
-import configparser
 import queue
 import re
+import subprocess
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
+import yaml
+
 import downloader
+import installer
+from log_custom import log
 
 MULTIPART_RE = re.compile(r"^(.*)\.(\d{3,})$")
 
-CONFIG_PATH = Path(__file__).parent / "config.ini"
+CONFIG_PATH = Path(__file__).parent / "config.yaml"
 DOWNLOADS_DIR = Path(__file__).parent / "downloads"
-BASE_SECTION = "base"
-DOWNLOADS_PREFIX = "downloads:"
+ANOMALY_EXE = Path(__file__).parent / ".." / "anomaly" / "bin" / "AnomalyDX11AVX.exe"
 
 
-def load_config() -> configparser.ConfigParser:
-    parser = configparser.ConfigParser()
-    parser.optionxform = str
+def load_config() -> dict:
     if not CONFIG_PATH.exists():
-        raise FileNotFoundError(f"config.ini not found at {CONFIG_PATH}")
-    parser.read(CONFIG_PATH, encoding="utf-8")
-    return parser
+        raise FileNotFoundError(f"config.yaml not found at {CONFIG_PATH}")
+    log("debug", f"Loading config from {CONFIG_PATH}")
+    with CONFIG_PATH.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
 
 
-def build_options(parser):
-    """Build the nested option tree from configured download sections."""
-    options = {}
-    for section in parser.sections():
-        if not section.startswith(DOWNLOADS_PREFIX):
-            continue
-
-        parts = [part.strip() for part in section[len(DOWNLOADS_PREFIX) :].split("/") if part.strip()]
-        node = options
-        for part in parts[:-1]:
-            node = node.setdefault(part, {})
-        if parts:
-            node.setdefault(parts[-1], None)
-    return options
-
-
-def get_downloads_for_selection(parser, selection):
-    """Return (url, destination, expected_hash) tuples for the selected path."""
+def get_downloads_for_selection(assets, selected_ids):
+    """Return (url, destination, expected_hash) tuples for base assets plus any asset
+    tied to a choice the user selected."""
+    selected = set(selected_ids)
     entries = []
-    seen_names = set()
-
-    def add_section(section_name: str):
-        if not parser.has_section(section_name):
-            return
-        for name, url in parser.items(section_name):
-            if name in seen_names:
-                continue
-            seen_names.add(name)
-            expected_hash = parser.get("hashes", name, fallback="").strip().lower() or None
-            entries.append((url, DOWNLOADS_DIR / name, expected_hash))
-
-    add_section(BASE_SECTION)
-    prefix_parts = []
-    for part in selection:
-        prefix_parts.append(part)
-        add_section(DOWNLOADS_PREFIX + "/".join(prefix_parts))
+    for asset in assets:
+        if asset["choice"] == "base" or asset["choice"] in selected:
+            entries.append((asset["url"], DOWNLOADS_DIR / asset["file"], asset.get("sha256")))
+    log("debug", f"Resolved manifest for selection {sorted(selected)}: {len(entries)} file(s)")
     return entries
-
-
-def get_description(parser, path_parts):
-    """Return the optional description for the selected path."""
-    return parser.get("descriptions", "/".join(path_parts), fallback="")
 
 
 def group_manifest(manifest):
@@ -117,7 +87,20 @@ def describe_item(item):
 
 
 CONFIG = load_config()
-OPTIONS = build_options(CONFIG)
+if CONFIG.get("debug_console", False):
+    import log_custom
+    log_custom.configure_console_logging(True)
+
+if "show_7z_console" in CONFIG:
+    installer.set_show_7z_console(bool(CONFIG["show_7z_console"]))
+
+if CONFIG.get("debug_console", False) and CONFIG.get("show_7z_console", False):
+    log("warning", "debug_console and show_7z_console are both enabled; 7z output is shown in its own console window and will not be captured for live install progress parsing.")
+
+CHOICES = CONFIG["choices"]
+ASSETS = CONFIG["assets"]
+STEPS = CONFIG["steps"]
+log("info", f"Config loaded: {len(CHOICES)} top-level choice(s), {len(ASSETS)} asset(s), {len(STEPS)} step(s)")
 
 
 class ScrollableFrame(ttk.Frame):
@@ -170,7 +153,9 @@ class SelectionFrame(ttk.Frame):
     def __init__(self, master, on_complete):
         super().__init__(master, padding=20)
         self.on_complete = on_complete
-        self.path = []
+        self.node_stack = [CHOICES]
+        self.crumbs = []
+        self.selected_ids = []
         self.choice_var = tk.StringVar()
         self.choice_var.trace_add("write", self._on_choice_changed)
         self._render_generation = 0
@@ -197,52 +182,56 @@ class SelectionFrame(ttk.Frame):
             child.destroy()
         self.options_scroll.canvas.yview_moveto(0)
 
-        title = " > ".join(["Zona Downloader", *self.path]) if self.path else "Select an option"
+        title = " > ".join(["Zona Installer", *self.crumbs]) if self.crumbs else "Select an option"
         self.title_label.config(text=title)
         self.choice_var.set("")
 
-        for label in self._current_node():
+        options = self.node_stack[-1]
+        for choice in options:
             option_frame = ttk.Frame(self.options_scroll.inner)
             option_frame.pack(fill="x", pady=2)
-            ttk.Radiobutton(option_frame, text=label, value=label, variable=self.choice_var).pack(anchor="w")
-            description = get_description(CONFIG, self.path + [label])
+            ttk.Radiobutton(
+                option_frame, text=choice["label"], value=choice["label"], variable=self.choice_var
+            ).pack(anchor="w")
+            description = choice.get("description", "")
             if description:
                 ttk.Label(option_frame, text=description, style="Muted.TLabel").pack(anchor="w", padx=(20, 0))
 
-        self.back_btn.config(state="normal" if self.path else "disabled")
+        self.back_btn.config(state="normal" if self.crumbs else "disabled")
         self.next_btn.config(state="disabled")
 
-        node = self._current_node()
-        if len(node) == 1:
-            self.after_idle(lambda: render_id == self._render_generation and self._select_option(next(iter(node))))
+        if len(options) == 1:
+            self.after_idle(lambda: render_id == self._render_generation and self._select_option(options[0]))
 
     def _on_choice_changed(self, *_):
         self.next_btn.config(state="normal" if self.choice_var.get() else "disabled")
 
-    def _current_node(self):
-        node = OPTIONS
-        for part in self.path:
-            node = node[part]
-        return node
-
     def _go_back(self):
-        if not self.path:
+        if not self.crumbs:
             return
-        self.path.pop()
+        log("debug", f"User went back from {self.crumbs}")
+        self.crumbs.pop()
+        self.selected_ids.pop()
+        self.node_stack.pop()
         self._render_step()
 
     def _go_next(self):
-        choice = self.choice_var.get()
-        if not choice:
+        label = self.choice_var.get()
+        if not label:
             return
+        choice = next(c for c in self.node_stack[-1] if c["label"] == label)
         self._select_option(choice)
 
     def _select_option(self, choice):
-        child = self._current_node()[choice]
-        self.path.append(choice)
-        if child is None:
-            self.on_complete(list(self.path))
+        self.crumbs.append(choice["label"])
+        self.selected_ids.append(choice["id"])
+        log("debug", f"User selected {choice['id']!r} ({choice['label']!r})")
+        children = choice.get("choices") or []
+        if not children:
+            log("info", f"Selection complete: {self.crumbs} -> ids={self.selected_ids}")
+            self.on_complete(list(self.crumbs), list(self.selected_ids))
             return
+        self.node_stack.append(children)
         self._render_step()
 
 
@@ -298,8 +287,12 @@ class GroupProgressRow(ttk.Frame):
 
 
 class ProgressFrame(ttk.Frame):
-    def __init__(self, master, selection, manifest):
+    def __init__(self, master, selection, manifest, on_cancel, on_continue):
         super().__init__(master, padding=20)
+        self.on_cancel = on_cancel
+        self.on_continue = on_continue
+        self._complete = False
+
         ttk.Label(self, text="Downloading: " + " / ".join(selection), style="Heading.TLabel").pack(
             anchor="w", pady=(0, 15)
         )
@@ -330,8 +323,18 @@ class ProgressFrame(ttk.Frame):
             if index < len(grouped) - 1:
                 ttk.Separator(self.rows_scroll.inner, orient="horizontal").pack(fill="x", pady=(0, 10))
 
-        self.overall_label = ttk.Label(self, text="Starting...")
-        self.overall_label.pack(anchor="w")
+        bottom_row = ttk.Frame(self)
+        bottom_row.pack(fill="x", pady=(10, 0))
+        self.overall_label = ttk.Label(bottom_row, text="Starting...")
+        self.overall_label.pack(side="left")
+        self.action_btn = ttk.Button(bottom_row, text="Cancel", command=self._on_action_clicked)
+        self.action_btn.pack(side="right")
+
+    def _on_action_clicked(self):
+        if self._complete:
+            self.on_continue()
+        else:
+            self.on_cancel()
 
     def update_progress(self, items):
         done = 0
@@ -352,18 +355,163 @@ class ProgressFrame(ttk.Frame):
 
     def mark_done(self):
         self.overall_label.config(text="Download complete!")
+        self._complete = True
+        self.action_btn.config(text="Continue")
 
     def mark_failed(self, message):
         for row in self.all_rows:
             if row.progress["value"] < 100:
                 row.mark_error("Error: " + message)
         self.overall_label.config(text="Download failed")
+        self.action_btn.config(state="disabled")
+
+
+def _step_description(step):
+    """Human-readable description of what a step is actually doing."""
+    action = step["action"]
+    if action == "create_dir":
+        return "Preparing folders"
+    if action == "verify_game":
+        return "Waiting for you to verify the game"
+    if action == "extract":
+        if "file" in step:
+            return f"Extracting {Path(step['file']).name}"
+        return "Installing selected settings"
+    return step["name"].replace("_", " ").capitalize()
+
+
+class InstallFrame(ttk.Frame):
+    """One combined progress bar covering every install step, with the current job's
+    description and (when 7z.exe reports it) its live extraction percentage underneath."""
+
+    def __init__(self, master, steps):
+        super().__init__(master, padding=20)
+        self.total_steps = len(steps)
+        self.completed_steps = 0
+
+        ttk.Label(self, text="Installing...", style="Heading.TLabel").pack(anchor="w", pady=(0, 15))
+
+        self.progress = ttk.Progressbar(self, orient="horizontal", length=350, mode="determinate")
+        self.progress.pack(fill="x", pady=(0, 10))
+
+        self.job_label = ttk.Label(self, text="Preparing...")
+        self.job_label.pack(anchor="w")
+        self.detail_label = ttk.Label(self, text="", style="Muted.TLabel")
+        self.detail_label.pack(anchor="w")
+
+    def _set_bar(self, fraction_within_current_step):
+        overall = (self.completed_steps + fraction_within_current_step) / self.total_steps * 100
+        self.progress["value"] = min(overall, 100)
+
+    def set_step_running(self, step):
+        self.job_label.config(text=f"Job {self.completed_steps + 1}/{self.total_steps}: {_step_description(step)}")
+        if step.get("action") == "extract":
+            if "file" in step:
+                self.detail_label.config(text=f"Extracting {Path(step['file']).name}...")
+            else:
+                self.detail_label.config(text="Installing selected files...")
+        else:
+            self.detail_label.config(text="Working...")
+        self._set_bar(0)
+
+    def set_step_progress(self, percent, detail=None):
+        if detail:
+            self.detail_label.config(text=f"{percent}% Extracted - {detail}")
+        else:
+            self.detail_label.config(text=f"{percent}% Extracted")
+        self._set_bar(percent / 100)
+
+    def set_step_done(self):
+        self.completed_steps += 1
+        self._set_bar(0)
+
+    def mark_done(self):
+        self.job_label.config(text="Installation complete!")
+        self.detail_label.config(text="")
+        self.progress["value"] = 100
+
+    def mark_failed(self, message):
+        self.progress.configure(style="Error.Horizontal.TProgressbar")
+        self.job_label.config(text="Installation failed")
+        self.detail_label.config(text=message, foreground="#d9534f")
+
+
+class VerifyGameDialog(tk.Toplevel):
+    """Modal step: launch Anomaly directly so the user can confirm the modded exe works."""
+
+    def __init__(self, master, on_continue):
+        super().__init__(master)
+        self.on_continue = on_continue
+
+        self.title("Verify installation")
+        self.resizable(False, False)
+        self.protocol("WM_DELETE_WINDOW", lambda: None)  # must go through Continue
+        self.transient(master)
+        self.grab_set()
+
+        frame = ttk.Frame(self, padding=20)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="Verify the game", style="Heading.TLabel").pack(anchor="w", pady=(0, 10))
+        message = (
+            "Launch a test run of Anomaly and confirm the modded executable works.\n"
+            "Close the game once you've checked it, then press Continue."
+        )
+        ttk.Label(frame, text=message, style="Muted.TLabel", wraplength=360, justify="left").pack(
+            anchor="w", pady=(0, 15)
+        )
+
+        self.launch_btn = ttk.Button(frame, text="Launch Test", command=self._launch)
+        self.launch_btn.pack(anchor="w")
+
+        self.continue_btn = ttk.Button(frame, text="Continue", command=self._continue, state="disabled")
+
+    def _launch(self):
+        self.launch_btn.pack_forget()
+        self.continue_btn.pack(anchor="w")
+        log("info", f"Launching {ANOMALY_EXE} for verification")
+        process = subprocess.Popen([str(ANOMALY_EXE)], cwd=ANOMALY_EXE.parent)
+        threading.Thread(target=self._wait_for_exit, args=(process,), daemon=True).start()
+
+    def _wait_for_exit(self, process):
+        process.wait()
+        exit_code = process.returncode
+        log("info", f"Anomaly exited with code {exit_code}")
+
+        if exit_code != 0:
+            self.after(
+                0,
+                lambda: (
+                    messagebox.showerror(
+                        "Verification failed",
+                        f"Anomaly exited with code {exit_code}. The game did not start cleanly, so installation cannot continue.",
+                        parent=self,
+                    ),
+                    self.grab_release(),
+                    self.destroy(),
+                    self.master.destroy(),
+                ),
+            )
+            return
+
+        self.after(0, lambda: self.continue_btn.config(state="normal"))
+
+    def _continue(self):
+        log("info", "User confirmed verification, resuming install")
+        self.grab_release()
+        self.destroy()
+        self.on_continue()
 
 
 class DownloaderApp:
     def __init__(self, root):
         self.root = root
         self.progress_queue = queue.Queue()
+        self.selected_ids = []
+        self.ctx = {}
+        self.verify_step = None
+        self.steps_before_verify = []
+        self.steps_after_verify = []
 
         style = ttk.Style(root)
         style.theme_use("clam")
@@ -372,7 +520,7 @@ class DownloaderApp:
         style.configure("MutedSmall.TLabel", foreground="#777777", font=("Segoe UI", 7))
         style.configure("Error.Horizontal.TProgressbar", background="#d9534f", troughcolor="#f5c6cb")
 
-        self.root.title("Zona Downloader")
+        self.root.title("Zona Installer")
         self.root.geometry("500x400")
         self.root.resizable(False, False)
 
@@ -380,12 +528,74 @@ class DownloaderApp:
         self.current_frame.pack(fill="both", expand=True)
         self._poll_progress_queue()
 
-    def _on_selection_complete(self, selection):
-        manifest = get_downloads_for_selection(CONFIG, selection)
+    def _on_selection_complete(self, labels, selected_ids):
+        self.selected_ids = selected_ids
+        manifest = get_downloads_for_selection(ASSETS, selected_ids)
+        log("info", f"Starting download phase: {len(manifest)} file(s) for selection {labels}")
         self.current_frame.destroy()
-        self.current_frame = ProgressFrame(self.root, selection, manifest)
+        self.current_frame = ProgressFrame(
+            self.root, labels, manifest, on_cancel=self._on_download_cancel, on_continue=self._start_install
+        )
         self.current_frame.pack(fill="both", expand=True)
         threading.Thread(target=run_download, args=(manifest, self.progress_queue), daemon=True).start()
+
+    def _on_download_cancel(self):
+        confirmed = messagebox.askyesno(
+            "Cancel download?",
+            "Cancel the download? Your progress is saved - re-run the installer and it will "
+            "pick up right where you left off.",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+        log("info", "User cancelled the download")
+        self.root.destroy()
+
+    def _start_install(self):
+        verify_index = next(i for i, step in enumerate(STEPS) if step["action"] == "verify_game")
+        self.verify_step = STEPS[verify_index]
+        self.steps_before_verify = STEPS[:verify_index]
+        self.steps_after_verify = STEPS[verify_index + 1 :]
+        self.ctx = {"assets": ASSETS, "selected_choice_ids": set(self.selected_ids)}
+
+        log("info", "Download phase complete, starting install phase")
+        self.current_frame.destroy()
+        self.current_frame = InstallFrame(self.root, STEPS)
+        self.current_frame.pack(fill="both", expand=True)
+        self._run_step_phase(self.steps_before_verify, self._show_verify_dialog)
+
+    def _run_step_phase(self, steps, on_phase_done):
+        def worker():
+            try:
+                installer.run_steps(
+                    steps,
+                    self.ctx,
+                    on_step_start=lambda step: self.progress_queue.put(("step_start", step)),
+                    on_step_progress=lambda step, percent, detail=None: self.progress_queue.put(("step_progress", percent, detail)),
+                    on_step_done=lambda step: self.progress_queue.put(("step_done",)),
+                )
+                self.progress_queue.put(("phase_done", on_phase_done))
+            except Exception as exc:
+                log("error", f"Install step phase failed: {exc}")
+                self.progress_queue.put(("install_error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_verify_dialog(self):
+        log("info", "Reached verify_game step, showing dialog")
+        if isinstance(self.current_frame, InstallFrame):
+            self.current_frame.set_step_running(self.verify_step)
+        VerifyGameDialog(self.root, on_continue=self._on_verify_continue)
+
+    def _on_verify_continue(self):
+        if isinstance(self.current_frame, InstallFrame):
+            self.current_frame.set_step_done()
+        self._run_step_phase(self.steps_after_verify, self._finish_install)
+
+    def _finish_install(self):
+        log("info", "Installation complete")
+        if isinstance(self.current_frame, InstallFrame):
+            self.current_frame.mark_done()
 
     def _poll_progress_queue(self):
         try:
@@ -400,6 +610,7 @@ class DownloaderApp:
                         self.current_frame.mark_done()
                 elif kind == "error":
                     message, *details = payload
+                    log("error", f"Download failed: {message}")
                     if isinstance(self.current_frame, ProgressFrame):
                         if details and details[0]:
                             self.current_frame.mark_failed(message)
@@ -408,15 +619,39 @@ class DownloaderApp:
                     messagebox.showerror("Download failed", message, parent=self.root)
                     self.root.destroy()
                     return
+                elif kind == "step_start":
+                    (step,) = payload
+                    if isinstance(self.current_frame, InstallFrame):
+                        self.current_frame.set_step_running(step)
+                elif kind == "step_progress":
+                    (percent, detail) = payload
+                    if isinstance(self.current_frame, InstallFrame):
+                        self.current_frame.set_step_progress(percent, detail)
+                elif kind == "step_done":
+                    if isinstance(self.current_frame, InstallFrame):
+                        self.current_frame.set_step_done()
+                elif kind == "phase_done":
+                    (on_phase_done,) = payload
+                    on_phase_done()
+                elif kind == "install_error":
+                    (message,) = payload
+                    log("error", f"Installation failed: {message}")
+                    if isinstance(self.current_frame, InstallFrame):
+                        self.current_frame.mark_failed(message)
+                    messagebox.showerror("Installation failed", message, parent=self.root)
+                    self.root.destroy()
+                    return
         except queue.Empty:
             pass
         self.root.after(100, self._poll_progress_queue)
 
 
 def run_gui():
+    log("info", "Launching GUI")
     root = tk.Tk()
     DownloaderApp(root)
     root.mainloop()
+    log("info", "GUI closed")
 
 
 def run_download(manifest, progress_queue):
@@ -448,10 +683,12 @@ def run_download(manifest, progress_queue):
             return
         progress_queue.put(("done",))
     except Exception as exc:
+        log("error", f"Download phase raised an exception: {exc}")
         progress_queue.put(("error", str(exc), True))
 
 
 def main():
+    log("info", "Zona Installer starting")
     run_gui()
 
 

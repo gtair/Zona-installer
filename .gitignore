@@ -28,6 +28,8 @@ ENV/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+logs/
 .pytype/
 .tox/
 .nox/
@@ -37,3 +39,6 @@ htmlcov/
 coverage.xml
 
 .ipynb_checkpoints/
+
+anomaly/
+mo2/
