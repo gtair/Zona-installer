@@ -13,9 +13,6 @@ import zipfile
 from pathlib import Path
 from typing import Callable, Optional
 
-import multivolumefile
-import py7zr
-
 from log_custom import log
 from win_job import close_job, create_kill_on_close_job
 
@@ -76,7 +73,9 @@ def _find_seven_zip() -> Optional[str]:
 
 SEVEN_ZIP_EXE = _find_seven_zip()
 SHOW_7Z_CONSOLE = False
-log("info", f"7z.exe {'found at ' + SEVEN_ZIP_EXE if SEVEN_ZIP_EXE else 'not found - falling back to py7zr'}")
+if not SEVEN_ZIP_EXE:
+    raise RuntimeError("7z.exe is required but not found. Please install 7-Zip or place 7z.exe in dependencies/")
+log("info", f"7z.exe found at {SEVEN_ZIP_EXE}")
 
 
 def set_show_7z_console(enabled: bool) -> None:
@@ -193,34 +192,11 @@ def _extract_zip_filtered(archive_path: Path, target_dir: Path, from_paths: list
                     break
 
 
-def _move_filtered_contents(temp_dir: Path, target_dir: Path, from_paths: list[str]) -> None:
-    """Move contents of specified paths from temp_dir to target_dir."""
-    for from_path in from_paths:
-        source_dir = temp_dir / from_path
-        if not source_dir.exists():
-            log("warn", f"Path not found in archive: {from_path}")
-            continue
-        
-        log("debug", f"Moving contents of {from_path} to {target_dir}")
-        for item in source_dir.iterdir():
-            target_item = target_dir / item.name
-            if item.is_dir():
-                if target_item.exists():
-                    shutil.rmtree(target_item)
-                shutil.move(str(item), str(target_item))
-            else:
-                target_item.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(item), str(target_item))
-
-
 def extract_archive(archive_path: Path, target_dir: Path, from_paths: Optional[list[str]] = None, on_progress: ProgressCallback = None) -> None:
-    """Extract a .zip, single-volume .7z, or multi-volume .7z.001+ archive.
+    """Extract a .zip or single/multi-volume .7z archive using 7z.exe (required).
 
     Multi-volume archives are detected by a numeric suffix (.001, .002, ...) and must be
     pointed at their first part - the remaining parts are expected to sit alongside it.
-    Prefers a real 7z.exe when one is installed - py7zr's pure-python decompression is
-    far too slow for multi-gigabyte modpacks to be practical as the only path. Only the
-    7z.exe path reports live percentages; py7zr/zipfile just report done-or-not.
     
     Args:
         archive_path: Path to the archive file
@@ -242,48 +218,31 @@ def extract_archive(archive_path: Path, target_dir: Path, from_paths: Optional[l
         log("debug", f"{archive_path.name}: zipfile extraction done")
         return
 
-    if SEVEN_ZIP_EXE:
-        log("debug", f"{archive_path.name}: using {SEVEN_ZIP_EXE}")
-        if from_paths:
-            # For 7z with from_paths, extract to temp dir then move filtered contents
-            with tempfile.TemporaryDirectory() as temp_dir:
-                _run_seven_zip(archive_path, Path(temp_dir), on_progress=on_progress)
-                _move_filtered_contents(Path(temp_dir), target_dir, from_paths)
-        else:
-            _run_seven_zip(archive_path, target_dir, on_progress=on_progress)
-        log("debug", f"{archive_path.name}: 7z.exe extraction done")
-        return
-
-    if archive_path.suffix.lstrip(".").isdigit():
-        base_path = archive_path.with_suffix("")
-        log("debug", f"{archive_path.name}: using py7zr multivolume, base={base_path.name}")
-        if from_paths:
-            # For py7zr with from_paths, extract to temp dir then move filtered contents
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_path = Path(temp_dir)
-                with multivolumefile.open(base_path, mode="rb") as volumes:
-                    with py7zr.SevenZipFile(volumes, mode="r") as archive:
-                        archive.extractall(path=temp_path)
-                _move_filtered_contents(temp_path, target_dir, from_paths)
-        else:
-            with multivolumefile.open(base_path, mode="rb") as volumes:
-                with py7zr.SevenZipFile(volumes, mode="r") as archive:
-                    archive.extractall(path=target_dir)
-        log("debug", f"{archive_path.name}: py7zr multivolume extraction done")
-        return
-
-    log("debug", f"{archive_path.name}: using py7zr")
+    # All .7z files (single-volume and multi-volume) use 7z.exe
+    log("debug", f"{archive_path.name}: using {SEVEN_ZIP_EXE}")
     if from_paths:
-        # For py7zr with from_paths, extract to temp dir then move filtered contents
+        # Extract to temp dir then move filtered contents
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            with py7zr.SevenZipFile(archive_path, mode="r") as archive:
-                archive.extractall(path=temp_path)
-            _move_filtered_contents(temp_path, target_dir, from_paths)
+            _run_seven_zip(archive_path, Path(temp_dir), on_progress=on_progress)
+            # Move filtered contents from temp to target
+            for from_path in from_paths:
+                source_dir = Path(temp_dir) / from_path
+                if not source_dir.exists():
+                    log("warn", f"Path not found in archive: {from_path}")
+                    continue
+                log("debug", f"Moving contents of {from_path} to {target_dir}")
+                for item in source_dir.iterdir():
+                    target_item = target_dir / item.name
+                    if item.is_dir():
+                        if target_item.exists():
+                            shutil.rmtree(target_item)
+                        shutil.move(str(item), str(target_item))
+                    else:
+                        target_item.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(item), str(target_item))
     else:
-        with py7zr.SevenZipFile(archive_path, mode="r") as archive:
-            archive.extractall(path=target_dir)
-    log("debug", f"{archive_path.name}: py7zr extraction done")
+        _run_seven_zip(archive_path, target_dir, on_progress=on_progress)
+    log("debug", f"{archive_path.name}: 7z.exe extraction done")
 
 
 def _selected_assets(assets: list[dict], selected_choice_ids: set[str]) -> list[dict]:

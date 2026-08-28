@@ -4,6 +4,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -13,6 +14,7 @@ import yaml
 import downloader
 import installer
 from log_custom import log
+from relocate import check_and_relocate, handle_deletion_argument
 
 MULTIPART_RE = re.compile(r"^(.*)\.(\d{3,})$")
 
@@ -713,12 +715,31 @@ def run_download(manifest, progress_queue):
 def main():
     mutex_name = "GTAIR-MODULAR-INSTALLER"
     kernel32 = ctypes.windll.kernel32
-    
-    # Try to create the mutex
+
+    if len(sys.argv) > 1 and sys.argv[1] == "/delete":
+        time.sleep(1)
+    # Create the mutex first
     mutex = kernel32.CreateMutexW(None, False, mutex_name)
-    
-    # If mutex already exists, exit immediately
+    # If mutex already exists, wait for the other instance to exit
     if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        log("error", "Another instance is running.")
+        sys.exit(1)
+    
+    # Now handle /delete argument (cleanup of old installation directory)
+    if len(sys.argv) > 1 and sys.argv[1] == "/delete":
+        if len(sys.argv) > 2:
+            folder_to_delete = sys.argv[2]
+            log("info", f"Deletion mode: {folder_to_delete}")
+            handle_deletion_argument(folder_to_delete)
+            # Continue as normal after deletion
+        else:
+            log("error", "Deletion mode requires a folder path argument")
+            sys.exit(1)
+    
+    # Check if installer is in correct location, relocate if needed
+    should_continue, install_dir = check_and_relocate()
+    if not should_continue:
+        log("info", "Relocation required, exiting")
         sys.exit()
     
     log("info", "Zona Installer starting")
