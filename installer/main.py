@@ -39,6 +39,19 @@ def get_downloads_for_selection(assets, selected_ids):
     return entries
 
 
+def get_steps_for_selection(steps, selected_ids):
+    """Return steps filtered to include base steps and steps tied to selected choices.
+    Steps without a 'choice' field always run. Steps with a 'choice' field only run
+    if that choice is in selected_ids."""
+    selected = set(selected_ids)
+    filtered = []
+    for step in steps:
+        if "choice" not in step or step["choice"] in selected:
+            filtered.append(step)
+    log("debug", f"Resolved steps for selection {sorted(selected)}: {len(filtered)} step(s)")
+    return filtered
+
+
 def group_manifest(manifest):
     """Group numbered archive parts (e.g. .001, .002) sharing a common base name."""
     groups = {}
@@ -559,15 +572,16 @@ class DownloaderApp:
         self.root.destroy()
 
     def _start_install(self):
-        verify_index = next(i for i, step in enumerate(STEPS) if step["action"] == "verify_game")
-        self.verify_step = STEPS[verify_index]
-        self.steps_before_verify = STEPS[:verify_index]
-        self.steps_after_verify = STEPS[verify_index + 1 :]
+        filtered_steps = get_steps_for_selection(STEPS, self.selected_ids)
+        verify_index = next(i for i, step in enumerate(filtered_steps) if step["action"] == "verify_game")
+        self.verify_step = filtered_steps[verify_index]
+        self.steps_before_verify = filtered_steps[:verify_index]
+        self.steps_after_verify = filtered_steps[verify_index + 1 :]
         self.ctx = {"assets": ASSETS, "selected_choice_ids": set(self.selected_ids)}
 
         log("info", "Download phase complete, starting install phase")
         self.current_frame.destroy()
-        self.current_frame = InstallFrame(self.root, STEPS)
+        self.current_frame = InstallFrame(self.root, filtered_steps)
         self.current_frame.pack(fill="both", expand=True)
         self._run_step_phase(self.steps_before_verify, self._show_verify_dialog)
 

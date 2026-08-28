@@ -136,6 +136,16 @@ steps:
     file: "downloads/zona_multipart.7z.001"
     target: "../mo2"
 
-  - name: install_selected_settings
+  - name: install_selected_settings_bhs_hud
     action: extract
+    choice: bhs_hud
+    file: "downloads/bhs_hud.7z"
     target: "../anomaly"
+    from: ["Bhs Hud/appdata", "Bhs Hud/gamedata"]
+
+  - name: install_selected_settings_clean_hud
+    action: extract
+    choice: clean_hud
+    file: "downloads/clean_hud.7z"
+    target: "../anomaly"
+    from: ["Clean Hud/appdata", "Clean Hud/gamedata"]
