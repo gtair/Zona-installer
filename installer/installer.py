@@ -333,10 +333,40 @@ def _run_delete_step(step: dict, ctx: dict, on_progress: ProgressCallback = None
             raise
 
 
+def _run_template_fill_step(step: dict, ctx: dict, on_progress: ProgressCallback = None) -> None:
+    """Read a template file, replace placeholders with values from the replacements dict, and write to target."""
+    source = ROOT / step["source"]
+    target = ROOT / step["target"]
+    replacements = step.get("replacements", {}).copy()
+    
+    # Auto-compute BASE_PATH if not provided
+    if "BASE_PATH" not in replacements:
+        base_path = str(ROOT.parent).replace("\\", "\\\\")
+        replacements["BASE_PATH"] = base_path
+        log("debug", f"Auto-computed BASE_PATH: {replacements['BASE_PATH']}")
+    
+    if not source.exists():
+        raise FileNotFoundError(f"Template file not found: {source}")
+    
+    log("info", f"Reading template: {source}")
+    content = source.read_text(encoding="utf-8")
+    
+    log("debug", f"Applying {len(replacements)} replacement(s)")
+    for key, value in replacements.items():
+        placeholder = f"{{{{{key}}}}}"
+        content = content.replace(placeholder, str(value))
+        log("debug", f"  Replaced {placeholder} with {value}")
+    
+    target.parent.mkdir(parents=True, exist_ok=True)
+    log("info", f"Writing to: {target}")
+    target.write_text(content, encoding="utf-8")
+
+
 STEP_HANDLERS: dict[str, Callable[[dict, dict, ProgressCallback], None]] = {
     "create_dir": lambda step, ctx, on_progress: create_dirs(step["dir"]),
     "extract": _run_extract_step,
     "delete": _run_delete_step,
+    "template_fill": _run_template_fill_step,
 }
 
 

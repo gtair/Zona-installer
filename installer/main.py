@@ -1,6 +1,8 @@
+import ctypes
 import queue
 import re
 import subprocess
+import sys
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -709,6 +711,16 @@ def run_download(manifest, progress_queue):
 
 
 def main():
+    mutex_name = "GTAIR-MODULAR-INSTALLER"
+    kernel32 = ctypes.windll.kernel32
+    
+    # Try to create the mutex
+    mutex = kernel32.CreateMutexW(None, False, mutex_name)
+    
+    # If mutex already exists, exit immediately
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        sys.exit()
+    
     log("info", "Zona Installer starting")
     run_gui()
 

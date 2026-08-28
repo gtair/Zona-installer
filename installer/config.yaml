@@ -98,10 +98,19 @@ assets:
     sha256: null
     choice: bhs_hud
 
+  - id: download_ModOrganizer.ini.template
+    file: ModOrganizer.ini.template
+    url: https://github.com/gtair/filehost-1/releases/download/v1.38/ModOrganizer.ini.template
+    sha256: null
+    choice: base
+
+  - id: download_nxmhandler.ini.template
+    file: nxmhandler.ini.template
+    url: https://github.com/gtair/filehost-1/releases/download/v1.38/nxmhandler.ini.template
+    sha256: null
+    choice: base
+
 steps:
-  - name: delete_old_dirs
-    action: delete
-    dir: ["../anomaly", "../mo2"]
 
   - name: prepare_dirs
     action: create_dir
@@ -135,6 +144,42 @@ steps:
     action: extract
     file: "downloads/zona_multipart.7z.001"
     target: "../mo2"
+
+
+# SSS23 MO2 SETUP
+  - name: setup_mo2_ini_sss23
+    action: template_fill
+    choice: sss23
+    source: "downloads/mo2_shutup/ModOrganizer.ini.template"
+    target: "../mo2/ModOrganizer.ini"
+    replacements:
+      PROFILE_NAME: "ZONA V1.38 SSS23.5 (High Graphics)"
+
+  - name: delete_mo2_profile_sss21
+    action: delete
+    choice: sss23
+    dir: ["../mo2/profiles/ZONA V1.38 SSS21 (Basic Graphics)", "../mo2/profiles/ZONA V1.38 (Potato)", "../mo2/profiles/Default"]
+
+
+# SSS21 MO2 SETUP
+  - name: setup_mo2_ini_sss21
+    action: template_fill
+    choice: sss21
+    source: "downloads/mo2_shutup/ModOrganizer.ini.template"
+    target: "../mo2/ModOrganizer.ini"
+    replacements:
+      PROFILE_NAME: "ZONA V1.38 SSS21 (Basic Graphics)"
+
+  - name: delete_mo2_profile_sss23
+    action: delete
+    choice: sss21
+    dir: ["../mo2/profiles/ZONA V1.38 SSS23.5 (High Graphics)", "../mo2/profiles/Default"]
+
+
+  - name: setup_nxm_handler
+    action: template_fill
+    source: "downloads/mo2_shutup/nxmhandler.ini.template"
+    target: "../mo2/nxmhandler.ini"
 
   - name: install_selected_settings_bhs_hud
     action: extract
