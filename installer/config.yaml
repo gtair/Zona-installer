@@ -19,8 +19,8 @@ choices:
     description: "Higher visual quality, less performance. The default choice for most users"
     choices:
       - id: clean_hud
-        label: "Clean HUD"
-        description: "places HUD on PDA"
+        label: "Medik Device Clean HUD"
+        description: "places HUD on a special medical device"
       - id: bhs_hud
         label: "BHS HUD"
         description: "Traditional Tarkov-style HUD"
@@ -100,6 +100,10 @@ assets:
 
 steps:
   - name: prepare_dirs
+    action: delete
+    dir: ["../anomaly", "../mo2"]
+
+  - name: prepare_dirs
     action: create_dir
     dir: ["downloads", "../anomaly", "../mo2"]
 
@@ -120,7 +124,7 @@ steps:
 
   - name: prompt_user_verify_game
     action: verify_game
-    # launches anomaly/bin/AnomalyDX11AVX.exe directly (hardcoded in main.py, not through MO2)
+    # launches anomaly/bin/AnomalyDX11AVX.exe directly
     # user closes the game once they've confirmed the modded exe works, then continues
 
   - name: delete_shader_cache
@@ -131,9 +135,7 @@ steps:
     action: extract
     file: "downloads/zona_multipart.7z.001"
     target: "../mo2"
-    # multi-part archive - installer.py follows .002-.007 automatically from the first part
 
   - name: install_selected_settings
     action: extract
     target: "../anomaly"
-    # no "file" here - installer.py extracts whichever downloaded assets match the user's selected choice ids

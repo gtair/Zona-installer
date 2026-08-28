@@ -170,6 +170,8 @@ class SelectionFrame(ttk.Frame):
         button_row.pack(fill="x")
         self.back_btn = ttk.Button(button_row, text="Back", command=self._go_back)
         self.back_btn.pack(side="left")
+        self.notice_label = ttk.Label(button_row, text="Powered by Gtair's Modular Installer for S.T.A.L.K.E.R. Zona", style="Muted.TLabel")
+        self.notice_label.pack(side="left")
         self.next_btn = ttk.Button(button_row, text="Next", command=self._go_next, state="disabled")
         self.next_btn.pack(side="right")
 
@@ -197,7 +199,12 @@ class SelectionFrame(ttk.Frame):
             if description:
                 ttk.Label(option_frame, text=description, style="Muted.TLabel").pack(anchor="w", padx=(20, 0))
 
-        self.back_btn.config(state="normal" if self.crumbs else "disabled")
+        if self.crumbs:
+            self.back_btn.pack(side="left")
+            self.notice_label.pack_forget()
+        else:
+            self.back_btn.pack_forget()
+            self.notice_label.pack(side="left")
         self.next_btn.config(state="disabled")
 
         if len(options) == 1:

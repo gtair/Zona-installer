@@ -8,6 +8,7 @@ user close it is a GUI concern that belongs in main.py.
 import re
 import shutil
 import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Callable, Optional
@@ -170,7 +171,49 @@ def _watch_seven_zip_progress(process: subprocess.Popen, on_progress: Callable[[
             buffer += chunk
 
 
-def extract_archive(archive_path: Path, target_dir: Path, on_progress: ProgressCallback = None) -> None:
+def _extract_zip_filtered(archive_path: Path, target_dir: Path, from_paths: list[str]) -> None:
+    """Extract only specified paths from a ZIP file, flattening them to target_dir."""
+    log("debug", f"{archive_path.name}: extracting filtered paths {from_paths}")
+    from_paths_normalized = [p.replace("\\", "/") for p in from_paths]
+    
+    with zipfile.ZipFile(archive_path) as archive:
+        for member in archive.namelist():
+            member_normalized = member.replace("\\", "/")
+            # Check if this member is under any of the from_paths
+            for from_path in from_paths_normalized:
+                if member_normalized.startswith(from_path + "/") or member_normalized == from_path:
+                    # Extract with the prefix removed
+                    relative_path = member_normalized[len(from_path):].lstrip("/")
+                    if relative_path:  # Skip the directory itself
+                        target_file = target_dir / relative_path
+                        target_file.parent.mkdir(parents=True, exist_ok=True)
+                        with archive.open(member) as source:
+                            with open(target_file, "wb") as target:
+                                target.write(source.read())
+                    break
+
+
+def _move_filtered_contents(temp_dir: Path, target_dir: Path, from_paths: list[str]) -> None:
+    """Move contents of specified paths from temp_dir to target_dir."""
+    for from_path in from_paths:
+        source_dir = temp_dir / from_path
+        if not source_dir.exists():
+            log("warn", f"Path not found in archive: {from_path}")
+            continue
+        
+        log("debug", f"Moving contents of {from_path} to {target_dir}")
+        for item in source_dir.iterdir():
+            target_item = target_dir / item.name
+            if item.is_dir():
+                if target_item.exists():
+                    shutil.rmtree(target_item)
+                shutil.move(str(item), str(target_item))
+            else:
+                target_item.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(item), str(target_item))
+
+
+def extract_archive(archive_path: Path, target_dir: Path, from_paths: Optional[list[str]] = None, on_progress: ProgressCallback = None) -> None:
     """Extract a .zip, single-volume .7z, or multi-volume .7z.001+ archive.
 
     Multi-volume archives are detected by a numeric suffix (.001, .002, ...) and must be
@@ -178,35 +221,68 @@ def extract_archive(archive_path: Path, target_dir: Path, on_progress: ProgressC
     Prefers a real 7z.exe when one is installed - py7zr's pure-python decompression is
     far too slow for multi-gigabyte modpacks to be practical as the only path. Only the
     7z.exe path reports live percentages; py7zr/zipfile just report done-or-not.
+    
+    Args:
+        archive_path: Path to the archive file
+        target_dir: Directory to extract to
+        from_paths: Optional list of paths to extract (e.g., ['clean_hud/appdata', 'clean_hud/gamedata'])
+                   If specified, only these paths are extracted and their contents are placed at target_dir root
+        on_progress: Optional callback for progress updates
     """
     target_dir.mkdir(parents=True, exist_ok=True)
-    log("info", f"Extracting {archive_path.name} -> {target_dir}")
+    log("info", f"Extracting {archive_path.name} -> {target_dir}" + (f" (from: {from_paths})" if from_paths else ""))
 
     if archive_path.suffix == ".zip":
         log("debug", f"{archive_path.name}: using zipfile")
-        with zipfile.ZipFile(archive_path) as archive:
-            archive.extractall(target_dir)
+        if from_paths:
+            _extract_zip_filtered(archive_path, target_dir, from_paths)
+        else:
+            with zipfile.ZipFile(archive_path) as archive:
+                archive.extractall(target_dir)
         log("debug", f"{archive_path.name}: zipfile extraction done")
         return
 
     if SEVEN_ZIP_EXE:
         log("debug", f"{archive_path.name}: using {SEVEN_ZIP_EXE}")
-        _run_seven_zip(archive_path, target_dir, on_progress=on_progress)
+        if from_paths:
+            # For 7z with from_paths, extract to temp dir then move filtered contents
+            with tempfile.TemporaryDirectory() as temp_dir:
+                _run_seven_zip(archive_path, Path(temp_dir), on_progress=on_progress)
+                _move_filtered_contents(Path(temp_dir), target_dir, from_paths)
+        else:
+            _run_seven_zip(archive_path, target_dir, on_progress=on_progress)
         log("debug", f"{archive_path.name}: 7z.exe extraction done")
         return
 
     if archive_path.suffix.lstrip(".").isdigit():
         base_path = archive_path.with_suffix("")
         log("debug", f"{archive_path.name}: using py7zr multivolume, base={base_path.name}")
-        with multivolumefile.open(base_path, mode="rb") as volumes:
-            with py7zr.SevenZipFile(volumes, mode="r") as archive:
-                archive.extractall(path=target_dir)
+        if from_paths:
+            # For py7zr with from_paths, extract to temp dir then move filtered contents
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_path = Path(temp_dir)
+                with multivolumefile.open(base_path, mode="rb") as volumes:
+                    with py7zr.SevenZipFile(volumes, mode="r") as archive:
+                        archive.extractall(path=temp_path)
+                _move_filtered_contents(temp_path, target_dir, from_paths)
+        else:
+            with multivolumefile.open(base_path, mode="rb") as volumes:
+                with py7zr.SevenZipFile(volumes, mode="r") as archive:
+                    archive.extractall(path=target_dir)
         log("debug", f"{archive_path.name}: py7zr multivolume extraction done")
         return
 
     log("debug", f"{archive_path.name}: using py7zr")
-    with py7zr.SevenZipFile(archive_path, mode="r") as archive:
-        archive.extractall(path=target_dir)
+    if from_paths:
+        # For py7zr with from_paths, extract to temp dir then move filtered contents
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            with py7zr.SevenZipFile(archive_path, mode="r") as archive:
+                archive.extractall(path=temp_path)
+            _move_filtered_contents(temp_path, target_dir, from_paths)
+    else:
+        with py7zr.SevenZipFile(archive_path, mode="r") as archive:
+            archive.extractall(path=target_dir)
     log("debug", f"{archive_path.name}: py7zr extraction done")
 
 
@@ -215,15 +291,16 @@ def _selected_assets(assets: list[dict], selected_choice_ids: set[str]) -> list[
 
 
 def _run_extract_step(step: dict, ctx: dict, on_progress: ProgressCallback = None) -> None:
+    from_paths = step.get("from", None)
     if "file" in step:
-        extract_archive(ROOT / step["file"], ROOT / step["target"], on_progress=on_progress)
+        extract_archive(ROOT / step["file"], ROOT / step["target"], from_paths=from_paths, on_progress=on_progress)
         return
 
     # steps without a "file" install whatever optional assets the user picked
     selected = _selected_assets(ctx["assets"], ctx["selected_choice_ids"])
     log("debug", f"{step['name']}: {len(selected)} selected asset(s) match {ctx['selected_choice_ids']}")
     for asset in selected:
-        extract_archive(ROOT / "downloads" / asset["file"], ROOT / step["target"], on_progress=on_progress)
+        extract_archive(ROOT / "downloads" / asset["file"], ROOT / step["target"], from_paths=from_paths, on_progress=on_progress)
 
 
 def _run_delete_step(step: dict, ctx: dict, on_progress: ProgressCallback = None) -> None:
