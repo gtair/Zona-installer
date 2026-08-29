@@ -1,4 +1,6 @@
 import ctypes
+import os
+from pathlib import Path
 import queue
 import re
 import shutil
@@ -7,11 +9,28 @@ import sys
 import tempfile
 import threading
 import time
+
+# 1. Force embedded Python to look in this directory for local modules
+BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+# 2. Register C-DLL directory & TCL paths for Tkinter
+py_dir = BASE_DIR / "dependencies" / "python"
+if py_dir.exists():
+    try:
+        os.add_dll_directory(str(py_dir))
+    except AttributeError:
+        pass
+    os.environ["TCL_LIBRARY"] = str(py_dir / "tcl" / "tcl8.6")
+    os.environ["TK_LIBRARY"] = str(py_dir / "tcl" / "tk8.6")
+
+# 3. Standard UI & 3rd-party imports
 import tkinter as tk
-from pathlib import Path
 from tkinter import messagebox, ttk
 import yaml
 
+# 4. Local module imports
 import downloader
 import installer
 from log_custom import log
