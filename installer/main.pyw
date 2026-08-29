@@ -163,15 +163,12 @@ def start_game() -> None:
 
 
 CONFIG = load_config()
+if CONFIG.get("log_debug", False):
+    from log_custom import debug_logging_to_file
+    debug_logging_to_file(True)
 if CONFIG.get("debug_console", False):
-    import log_custom
-    log_custom.configure_console_logging(True)
-
-if "show_7z_console" in CONFIG:
-    installer.set_show_7z_console(bool(CONFIG["show_7z_console"]))
-
-if CONFIG.get("debug_console", False) and CONFIG.get("show_7z_console", False):
-    log("warning", "debug_console and show_7z_console are both enabled; 7z output is shown in its own console window and will not be captured for live install progress parsing.")
+    from log_custom import set_console_visible
+    set_console_visible(True)
 
 CHOICES = CONFIG["choices"]
 ASSETS = CONFIG["assets"]
@@ -711,17 +708,27 @@ class DownloaderApp:
 
     def _start_install(self):
         filtered_steps = get_steps_for_selection(STEPS, self.selected_ids)
-        verify_index = next(i for i, step in enumerate(filtered_steps) if step["action"] == "verify_game")
-        self.verify_step = filtered_steps[verify_index]
-        self.steps_before_verify = filtered_steps[:verify_index]
-        self.steps_after_verify = filtered_steps[verify_index + 1 :]
+        verify_index = next(
+            (i for i, step in enumerate(filtered_steps) if step["action"] == "verify_game"), None
+        )
         self.ctx = {"assets": ASSETS, "selected_choice_ids": set(self.selected_ids)}
 
         log("info", "Download phase complete, starting install phase")
         self.current_frame.destroy()
         self.current_frame = InstallFrame(self.root, filtered_steps)
         self.current_frame.pack(fill="both", expand=True)
-        self._run_step_phase(self.steps_before_verify, self._show_verify_dialog)
+
+        if verify_index is None:
+            log("info", "No verify_game step configured, skipping verify dialog")
+            self.verify_step = None
+            self.steps_before_verify = filtered_steps
+            self.steps_after_verify = []
+            self._run_step_phase(self.steps_before_verify, self._finish_install)
+        else:
+            self.verify_step = filtered_steps[verify_index]
+            self.steps_before_verify = filtered_steps[:verify_index]
+            self.steps_after_verify = filtered_steps[verify_index + 1 :]
+            self._run_step_phase(self.steps_before_verify, self._show_verify_dialog)
 
     def _run_step_phase(self, steps, on_phase_done):
         def worker():

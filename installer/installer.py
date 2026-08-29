@@ -72,16 +72,9 @@ def _find_seven_zip() -> Optional[str]:
 
 
 SEVEN_ZIP_EXE = _find_seven_zip()
-SHOW_7Z_CONSOLE = False
 if not SEVEN_ZIP_EXE:
     raise RuntimeError("7z.exe is required but not found. Please install 7-Zip or place 7z.exe in dependencies/")
 log("info", f"7z.exe found at {SEVEN_ZIP_EXE}")
-
-
-def set_show_7z_console(enabled: bool) -> None:
-    global SHOW_7Z_CONSOLE
-    SHOW_7Z_CONSOLE = bool(enabled)
-    log("info", f"7z console visibility set to {SHOW_7Z_CONSOLE}")
 
 
 def create_dirs(names: list[str]) -> None:
@@ -122,9 +115,6 @@ def _run_seven_zip(archive_path: Path, target_dir: Path, on_progress: ProgressCa
     else:
         kwargs["stdout"] = None
         kwargs["stderr"] = None
-
-    if SHOW_7Z_CONSOLE:
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
     process = subprocess.Popen(args, **kwargs)
     job = create_kill_on_close_job(process)

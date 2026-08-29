@@ -4,8 +4,9 @@ import sys
 import inspect
 import os
 import io
-import threading
+import ctypes
 import traceback
+import threading
 from pathlib import Path
 
 # 1. Setup the filename once when this module is first imported
@@ -34,47 +35,93 @@ class CustomFormatter(logging.Formatter):
                 record.source = combined_source[:27] + "..."
             else:
                 record.source = combined_source.ljust(30)
-            
+
         return super().format(record)
 
 # The -8s pads the level name (DEBUG, INFO, etc.) so the brackets stay aligned
 log_format_str = "%(asctime)s.%(msecs)03d [%(levelname)-8s] %(source)s - %(message)s"
 log_format = CustomFormatter(log_format_str, datefmt="%H:%M:%S")
 
-# 3. Setup the File Handler (Logs EVERYTHING to file)
+# 3. Setup the File Handler. Its level is controlled by debug_logging_to_file()
+#    below -- it starts at INFO and can be raised to DEBUG at runtime.
 file_handler = logging.FileHandler(_log_file, encoding="utf-8")
 file_handler.setFormatter(log_format)
-file_handler.setLevel(logging.DEBUG)
+file_handler.setLevel(logging.INFO)
 
-# 4. Get the root logger and add the file handler
+# 4. Get the root logger and add the file handler.
+#    Root stays at DEBUG so that it never filters anything out before it
+#    reaches the handlers -- each handler's own level does the filtering.
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)
 logger.addHandler(file_handler)
 
+# 5. Console handler: always logs DEBUG and above whenever there IS a
+#    console. Unlike the file handler, this has no separate level toggle --
+#    see attach_console_handler() below and set_console_visible() for how
+#    the console itself gets shown/hidden on Windows.
 _console_handler = None
 
 
-def configure_console_logging(enabled: bool):
-    """Enable or disable console output for debug logs. This is controlled by config.yaml."""
+def attach_console_handler():
+    """
+    (Re)build the console log handler from whatever sys.stdout currently is.
+
+    Called once below at import time for the normal case (running un-frozen,
+    or a --console PyInstaller build already attached to a terminal). Call it
+    AGAIN after set_console_visible(True) allocates a fresh console and
+    repoints sys.stdout, since a handler built at import time is bound to the
+    old sys.stdout (often None) and won't pick up the new one on its own.
+
+    Console output always logs DEBUG and above; there's no level toggle for
+    it the way there is for the file (see debug_logging_to_file).
+    """
     global _console_handler
 
     if _console_handler is not None:
         logger.removeHandler(_console_handler)
         _console_handler = None
 
-    if not enabled or sys.stdout is None:
+    if sys.stdout is None or not hasattr(sys.stdout, "buffer"):
         return
 
-    _utf8_stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    _utf8_stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     _console_handler = logging.StreamHandler(_utf8_stdout)
     _console_handler.setFormatter(log_format)
     _console_handler.setLevel(logging.DEBUG)
     logger.addHandler(_console_handler)
 
 
-# 5. Console handler only makes sense with a real console attached - a GUI app launched
-# via pythonw.exe (or frozen without a console) has sys.stdout as None.
-configure_console_logging(False)
+attach_console_handler()
+
+
+def set_console_visible(show: bool):
+    kernel32 = ctypes.windll.kernel32
+
+    if show:
+        if kernel32.GetConsoleWindow():
+            return
+
+        if not kernel32.AllocConsole():
+            return
+
+        sys.stdout = io.TextIOWrapper(
+            open("CONOUT$", "wb", buffering=0), encoding="utf-8", errors="replace", write_through=True
+        )
+        sys.stderr = io.TextIOWrapper(
+            open("CONOUT$", "wb", buffering=0), encoding="utf-8", errors="replace", write_through=True
+        )
+        sys.stdin = io.TextIOWrapper(open("CONIN$", "rb", buffering=0), encoding="utf-8", errors="replace")
+
+        attach_console_handler()
+    else:
+        if kernel32.GetConsoleWindow():
+            kernel32.FreeConsole()
+        attach_console_handler()
+
+
+def debug_logging_to_file(enabled: bool = False):
+    file_handler.setLevel(logging.DEBUG if enabled else logging.INFO)
+debug_logging_to_file(False)
 
 
 def _build_exception_report_path() -> str:
@@ -112,7 +159,6 @@ def _write_exception_report(exc_type, exc_value, exc_traceback, context=None):
             report_file.write("\nTraceback:\n")
             traceback.print_exception(exc_type, exc_value, exc_traceback, file=report_file)
     except OSError as e:
-        # If we can't write to disk, at least try to log it
         print(f"[CRITICAL] Failed to write exception report to {report_path}: {e}", file=sys.stderr)
         try:
             # Fallback: write to stderr
@@ -182,22 +228,12 @@ if hasattr(threading, "excepthook"):
 
 # 6. The exported log function
 def log(level: str, message: str):
-    """
-    Custom log wrapper that captures the caller's frame to maintain
-    accurate filename and function name in the logs.
-    """
-    # Get the caller's frame (1 level back)
     frame = inspect.currentframe().f_back
     filename = os.path.basename(frame.f_code.co_filename)
     funcname = frame.f_code.co_name
-    
+
     extra = {'caller_filename': filename, 'caller_funcName': funcname}
-    
-    # Dynamically call the appropriate logging level
+
     level_upper = level.upper()
     log_func = getattr(logger, level_upper.lower(), logger.info)
     log_func(message, extra=extra)
-
-# Usage Example:
-# log("info", "Bot is starting up...")
-# log("debug", "Checking database connection...")
