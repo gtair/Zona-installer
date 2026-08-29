@@ -229,13 +229,22 @@ def check_and_relocate():
     
     # Launch new instance from target location with /delete argument for current location
     try:
-        python_exe = sys.executable
-        main_py = target_dir / "Start_Installer.bat"
-        
-        log("info", f"Launching new instance from {main_py}")
+        new_python = Path(target_dir) / "dependencies" / "python" / "pythonw.exe"
+        new_main = Path(target_dir) / "main.pyw"
+
+        log("info", f"Launching new instance from {target_dir}")
+
+        # Fully detach process on Windows
+        flags = (
+            subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            if sys.platform == "win32"
+            else 0
+        )
+
         subprocess.Popen(
-            [python_exe, str(main_py), "/delete", str(current_dir)],
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+            [str(new_python), str(new_main), "/delete", str(current_dir)],
+            cwd=str(target_dir),  # CRITICAL: Unlocks current_dir so it can be deleted
+            creationflags=flags
         )
         log("info", "New instance launched, exiting current instance")
     except Exception as e:

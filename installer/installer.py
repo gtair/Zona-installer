@@ -1,10 +1,3 @@
-"""Runs the ordered install steps described in config.yaml against downloaded assets.
-
-Everything here is plain filesystem work - no Tkinter, no networking. The one step type
-this module refuses to run is "verify_game", since launching the game and watching the
-user close it is a GUI concern that belongs in main.py.
-"""
-
 import re
 import shutil
 import subprocess
@@ -109,6 +102,8 @@ def _run_seven_zip(archive_path: Path, target_dir: Path, on_progress: ProgressCa
     kwargs = {
         "text": True,
     }
+    
+    kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     if capture_output:
         kwargs["stdout"] = subprocess.PIPE
         kwargs["stderr"] = subprocess.DEVNULL

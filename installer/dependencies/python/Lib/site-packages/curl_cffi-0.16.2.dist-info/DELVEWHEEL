@@ -1,0 +1,2 @@
+Version: 1.13.0
+Arguments: ['C:\\Users\\runneradmin\\AppData\\Local\\Temp\\cibw-run-k23pecl5\\cp310-win_amd64\\build\\venv\\Scripts\\delvewheel', 'repair', '--add-path', './lib64;./lib32;./libarm64', '-w', 'C:\\Users\\runneradmin\\AppData\\Local\\Temp\\cibw-run-k23pecl5\\cp310-win_amd64\\repaired_wheel', 'C:\\Users\\runneradmin\\AppData\\Local\\Temp\\cibw-run-k23pecl5\\cp310-win_amd64\\built_wheel\\curl_cffi-0.16.2-cp310-abi3-win_amd64.whl']

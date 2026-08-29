@@ -10,25 +10,22 @@ import tempfile
 import threading
 import time
 
-# 1. Force embedded Python to look in this directory for local modules
-BASE_DIR = Path(__file__).resolve().parent
-if str(BASE_DIR) not in sys.path:
-    sys.path.insert(0, str(BASE_DIR))
-
-# 2. Register C-DLL directory & TCL paths for Tkinter
-py_dir = BASE_DIR / "dependencies" / "python"
-if py_dir.exists():
-    try:
-        os.add_dll_directory(str(py_dir))
-    except AttributeError:
-        pass
-    os.environ["TCL_LIBRARY"] = str(py_dir / "tcl" / "tcl8.6")
-    os.environ["TK_LIBRARY"] = str(py_dir / "tcl" / "tk8.6")
-
 # 3. Standard UI & 3rd-party imports
 import tkinter as tk
 from tkinter import messagebox, ttk
 import yaml
+import curl_cffi  # Verified import
+
+# 1. Force Python to look in this directory for local script modules
+BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
+# 2. Tell Tkinter where the Tcl/Tk data assets live
+py_dir = BASE_DIR / "dependencies" / "python"
+if py_dir.exists():
+    os.environ["TCL_LIBRARY"] = str(py_dir / "tcl" / "tcl8.6")
+    os.environ["TK_LIBRARY"] = str(py_dir / "tcl" / "tk8.6")
 
 # 4. Local module imports
 import downloader
@@ -652,8 +649,8 @@ class VerifyGameDialog(tk.Toplevel):
         ttk.Label(frame, text="Verify the game", style="Heading.TLabel").pack(anchor="w", pady=(0, 10))
         message = (
             "Launch a test run of Anomaly and confirm you can see 'modded exes' in the bottom left\n"
-            "Close the game once you've checked it, then close the game and click continue.\n"
-            "Do not load into a game, stay in the main menu."
+            "Close the game once you've checked it, then click continue.\n"
+            "Do not load into a save, stay in the main menu."
         )
         ttk.Label(frame, text=message, style="Muted.TLabel", wraplength=360, justify="left").pack(
             anchor="w", pady=(0, 15)
