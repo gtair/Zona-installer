@@ -1,8 +1,10 @@
 import ctypes
 import queue
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -21,6 +23,7 @@ MULTIPART_RE = re.compile(r"^(.*)\.(\d{3,})$")
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 DOWNLOADS_DIR = Path(__file__).parent / "downloads"
 ANOMALY_EXE = Path(__file__).parent / ".." / "anomaly" / "bin" / "AnomalyDX11AVX.exe"
+MO2_EXE = Path(__file__).parent / ".." / "mo2" / "modorganizer.exe"
 
 
 def load_config() -> dict:
@@ -101,6 +104,62 @@ def describe_item(item):
     speed = downloader.format_speed(item["speed"])
     activity = "Downloading" if item["speed"] else "Connecting or retrying"
     return item["percent"], f"{activity} - {item['percent']:.0f}% - {speed}", False
+
+
+def get_desktop_path() -> Path:
+    """Resolve the current user's Desktop folder via the Windows API. Handles redirected
+    (e.g. OneDrive) desktop folders correctly, unlike assuming Path.home() / 'Desktop'."""
+    CSIDL_DESKTOPDIRECTORY = 0x0010
+    buf = ctypes.create_unicode_buffer(260)
+    ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_DESKTOPDIRECTORY, None, 0, buf)
+    return Path(buf.value)
+
+
+def delete_downloads() -> None:
+    """Delete the downloads folder created by the installer and everything inside it."""
+    if not DOWNLOADS_DIR.exists():
+        log("debug", f"Downloads dir does not exist, skipping: {DOWNLOADS_DIR}")
+        return
+    log("info", f"Deleting downloads directory: {DOWNLOADS_DIR}")
+    shutil.rmtree(DOWNLOADS_DIR)
+
+
+def create_desktop_shortcut() -> None:
+    """Create a Desktop shortcut that launches [drive]/Zona/mo2/modorganizer.exe."""
+    mo2_exe = MO2_EXE.resolve()
+    if not mo2_exe.exists():
+        raise FileNotFoundError(f"Mod Organizer executable not found: {mo2_exe}")
+
+    shortcut_path = get_desktop_path() / "Zona.lnk"
+    log("info", f"Creating desktop shortcut at {shortcut_path} -> {mo2_exe}")
+
+    # No pywin32 dependency in this project, so use WScript.Shell via a throwaway VBScript -
+    # the standard dependency-free way to write a .lnk file on Windows.
+    vbs_script = (
+        'Set oWS = WScript.CreateObject("WScript.Shell")\n'
+        f'sLinkFile = "{shortcut_path}"\n'
+        "Set oLink = oWS.CreateShortcut(sLinkFile)\n"
+        f'oLink.TargetPath = "{mo2_exe}"\n'
+        f'oLink.WorkingDirectory = "{mo2_exe.parent}"\n'
+        f'oLink.IconLocation = "{mo2_exe}"\n'
+        "oLink.Save\n"
+    )
+    with tempfile.NamedTemporaryFile("w", suffix=".vbs", delete=False, encoding="utf-8") as handle:
+        handle.write(vbs_script)
+        vbs_path = handle.name
+    try:
+        subprocess.run(["cscript", "//nologo", vbs_path], check=True, capture_output=True, text=True)
+    finally:
+        Path(vbs_path).unlink(missing_ok=True)
+
+
+def start_game() -> None:
+    """Launch ../mo2/modorganizer.exe."""
+    mo2_exe = MO2_EXE.resolve()
+    if not mo2_exe.exists():
+        raise FileNotFoundError(f"Mod Organizer executable not found: {mo2_exe}")
+    log("info", f"Launching {mo2_exe}")
+    subprocess.Popen([str(mo2_exe)], cwd=mo2_exe.parent)
 
 
 CONFIG = load_config()
@@ -460,6 +519,80 @@ class InstallFrame(ttk.Frame):
         self.detail_label.config(text=message, foreground="#d9534f")
 
 
+class FinishFrame(ttk.Frame):
+    """Final screen shown once installation completes. Lets the user pick optional
+    post-install cleanup/launch actions and run them all via one Finish button."""
+
+    # (key, label, description) - order here is display order, NOT execution order.
+    OPTIONS = [
+        (
+            "delete_downloads",
+            "Delete downloads",
+            "Deletes the downloads the installer just made (deletes the downloads folder "
+            "and everything inside it)",
+        ),
+        (
+            "create_shortcut",
+            "Create desktop shortcut",
+            "Creates a shortcut on your desktop to launch the game "
+            "([drive]/Zona/mo2/modorganizer.exe)",
+        ),
+        (
+            "start_game",
+            "Start the game",
+            "Starts [drive]/Zona/mo2/modorganizer.exe",
+        ),
+    ]
+
+    # Fixed execution order, independent of the order options are checked/displayed.
+    EXECUTION_ORDER = ["delete_downloads", "create_shortcut", "start_game"]
+
+    def __init__(self, master, on_finish):
+        super().__init__(master, padding=20)
+        self.on_finish = on_finish
+        self.vars = {key: tk.BooleanVar(value=False) for key, _, _ in self.OPTIONS}
+
+        ttk.Label(self, text="Installation complete!", style="Heading.TLabel").pack(
+            anchor="w", pady=(0, 15)
+        )
+
+        for key, label, description in self.OPTIONS:
+            option_frame = ttk.Frame(self)
+            option_frame.pack(fill="x", pady=4)
+            ttk.Checkbutton(option_frame, text=label, variable=self.vars[key]).pack(anchor="w")
+            ttk.Label(option_frame, text=description, style="Muted.TLabel", wraplength=440, justify="left").pack(
+                anchor="w", padx=(20, 0)
+            )
+
+        self.status_label = ttk.Label(self, text="", style="Muted.TLabel", wraplength=440, justify="left")
+        self.status_label.pack(anchor="w", pady=(15, 0), fill="x", expand=True)
+
+        button_row = ttk.Frame(self)
+        button_row.pack(fill="x", side="bottom", pady=(15, 0))
+        self.finish_btn = ttk.Button(button_row, text="Finish", command=self._on_finish_clicked)
+        self.finish_btn.pack(side="right")
+
+    def _on_finish_clicked(self):
+        selected = {key for key, _, _ in self.OPTIONS if self.vars[key].get()}
+        self.finish_btn.config(state="disabled")
+        self.status_label.config(text="Working...", foreground="")
+        log("info", f"User pressed Finish with selection: {sorted(selected)}")
+        self.on_finish(selected, self._on_action_progress, self._on_actions_done)
+
+    def _on_action_progress(self, text):
+        self.status_label.config(text=text, foreground="")
+
+    def _on_actions_done(self, errors):
+        if errors:
+            self.status_label.config(
+                text="Finished with errors:\n" + "\n".join(errors), foreground="#d9534f"
+            )
+            self.finish_btn.config(state="normal", text="Retry")
+        else:
+            self.status_label.config(text="All done!", foreground="")
+            self.finish_btn.config(text="Close", state="normal", command=self.winfo_toplevel().destroy)
+
+
 class VerifyGameDialog(tk.Toplevel):
     """Modal step: launch Anomaly directly so the user can confirm the modded exe works."""
 
@@ -478,8 +611,9 @@ class VerifyGameDialog(tk.Toplevel):
 
         ttk.Label(frame, text="Verify the game", style="Heading.TLabel").pack(anchor="w", pady=(0, 10))
         message = (
-            "Launch a test run of Anomaly and confirm the modded executable works.\n"
-            "Close the game once you've checked it, then press Continue."
+            "Launch a test run of Anomaly and confirm you can see 'modded exes' in the bottom left\n"
+            "Close the game once you've checked it, then close the game and click continue.\n"
+            "Do not load into a game, stay in the main menu."
         )
         ttk.Label(frame, text=message, style="Muted.TLabel", wraplength=360, justify="left").pack(
             anchor="w", pady=(0, 15)
@@ -621,6 +755,38 @@ class DownloaderApp:
         log("info", "Installation complete")
         if isinstance(self.current_frame, InstallFrame):
             self.current_frame.mark_done()
+        self.root.after(600, self._show_finish_options)
+
+    def _show_finish_options(self):
+        self.current_frame.destroy()
+        self.current_frame = FinishFrame(self.root, on_finish=self._run_finish_actions)
+        self.current_frame.pack(fill="both", expand=True)
+
+    def _run_finish_actions(self, selected, on_progress, on_done):
+        """Run the actions the user checked, in the fixed order:
+        delete downloads -> create desktop shortcut -> start mo2."""
+        action_labels = {key: label for key, label, _ in FinishFrame.OPTIONS}
+        action_fns = {
+            "delete_downloads": delete_downloads,
+            "create_shortcut": create_desktop_shortcut,
+            "start_game": start_game,
+        }
+
+        def worker():
+            errors = []
+            for key in FinishFrame.EXECUTION_ORDER:
+                if key not in selected:
+                    continue
+                label = action_labels[key]
+                self.root.after(0, lambda l=label: on_progress(f"{l}..."))
+                try:
+                    action_fns[key]()
+                except Exception as exc:
+                    log("error", f"Finish action '{key}' failed: {exc}")
+                    errors.append(f"{label}: {exc}")
+            self.root.after(0, lambda: on_done(errors))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _poll_progress_queue(self):
         try:

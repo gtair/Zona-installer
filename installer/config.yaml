@@ -89,25 +89,25 @@ assets:
   - id: download_hud_clean
     file: clean_hud.7z
     url: https://github.com/gtair/filehost-1/releases/download/v1.38/clean_hud.7z
-    sha256: null
+    sha256: "A9785763AB7FBBB858D23DF73F4ADF47F54A9D734C9A5247D17DAA91183DA978"
     choice: clean_hud
 
   - id: download_hud_bhs
     file: bhs_hud.7z
     url: https://github.com/gtair/filehost-1/releases/download/v1.38/bhs_hud.7z
-    sha256: null
+    sha256: "1748501A20CD92C332BC198E7A3D5401ED2015F344372122957A0C8894608244"
     choice: bhs_hud
 
   - id: download_ModOrganizer.ini.template
     file: ModOrganizer.ini.template
     url: https://github.com/gtair/filehost-1/releases/download/v1.38/ModOrganizer.ini.template
-    sha256: null
+    sha256: "C934D463BA60F1E13143FC73B8DB72D52ACD347C80E525E48A10F66C3B711660"
     choice: base
 
   - id: download_nxmhandler.ini.template
     file: nxmhandler.ini.template
     url: https://github.com/gtair/filehost-1/releases/download/v1.38/nxmhandler.ini.template
-    sha256: null
+    sha256: "A2257A34C1805C7FBA1D13E5965DCACA7DC8C47D1D88EC150275438AEF602804"
     choice: base
 
 steps:
@@ -150,7 +150,7 @@ steps:
   - name: setup_mo2_ini_sss23
     action: template_fill
     choice: sss23
-    source: "downloads/mo2_shutup/ModOrganizer.ini.template"
+    source: "downloads/ModOrganizer.ini.template"
     target: "../mo2/ModOrganizer.ini"
     replacements:
       PROFILE_NAME: "ZONA V1.38 SSS23.5 (High Graphics)"
@@ -165,7 +165,7 @@ steps:
   - name: setup_mo2_ini_sss21
     action: template_fill
     choice: sss21
-    source: "downloads/mo2_shutup/ModOrganizer.ini.template"
+    source: "downloads/ModOrganizer.ini.template"
     target: "../mo2/ModOrganizer.ini"
     replacements:
       PROFILE_NAME: "ZONA V1.38 SSS21 (Basic Graphics)"
@@ -178,7 +178,7 @@ steps:
 
   - name: setup_nxm_handler
     action: template_fill
-    source: "downloads/mo2_shutup/nxmhandler.ini.template"
+    source: "downloads/nxmhandler.ini.template"
     target: "../mo2/nxmhandler.ini"
 
   - name: install_selected_settings_bhs_hud
