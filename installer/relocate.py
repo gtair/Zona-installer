@@ -230,7 +230,7 @@ def check_and_relocate():
     # Launch new instance from target location with /delete argument for current location
     try:
         python_exe = sys.executable
-        main_py = target_dir / "main.py"
+        main_py = target_dir / "Start_Installer.bat"
         
         log("info", f"Launching new instance from {main_py}")
         subprocess.Popen(

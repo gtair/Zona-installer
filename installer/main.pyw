@@ -172,6 +172,8 @@ def create_desktop_shortcut() -> None:
         raise FileNotFoundError(f"Mod Organizer executable not found: {mo2_exe}")
 
     shortcut_path = get_desktop_path() / "Zona.lnk"
+    icon_path = (Path.cwd() / "dependencies" / "icon.ico").resolve()
+
     log("info", f"Creating desktop shortcut at {shortcut_path} -> {mo2_exe}")
 
     # No pywin32 dependency in this project, so use WScript.Shell via a throwaway VBScript -
@@ -182,7 +184,7 @@ def create_desktop_shortcut() -> None:
         "Set oLink = oWS.CreateShortcut(sLinkFile)\n"
         f'oLink.TargetPath = "{mo2_exe}"\n'
         f'oLink.WorkingDirectory = "{mo2_exe.parent}"\n'
-        f'oLink.IconLocation = "{mo2_exe}"\n'
+        f'oLink.IconLocation = "{icon_path}"\n'
         "oLink.Save\n"
     )
     with tempfile.NamedTemporaryFile("w", suffix=".vbs", delete=False, encoding="utf-8") as handle:
