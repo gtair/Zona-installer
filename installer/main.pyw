@@ -10,7 +10,6 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
-
 import yaml
 
 import downloader
@@ -113,6 +112,29 @@ def get_desktop_path() -> Path:
     buf = ctypes.create_unicode_buffer(260)
     ctypes.windll.shell32.SHGetFolderPathW(None, CSIDL_DESKTOPDIRECTORY, None, 0, buf)
     return Path(buf.value)
+
+
+class _FLASHWINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.c_uint),
+        ("hwnd", ctypes.c_void_p),
+        ("dwFlags", ctypes.c_uint),
+        ("uCount", ctypes.c_uint),
+        ("dwTimeout", ctypes.c_uint),
+    ]
+
+
+_FLASHW_TRAY = 0x00000002
+_FLASHW_TIMERNOFG = 0x0000000C  # flash until the window comes to the foreground
+
+
+def flash_taskbar(window) -> None:
+    try:
+        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
+        info = _FLASHWINFO(ctypes.sizeof(_FLASHWINFO), hwnd, _FLASHW_TRAY | _FLASHW_TIMERNOFG, 0, 0)
+        ctypes.windll.user32.FlashWindowEx(ctypes.byref(info))
+    except Exception as exc:
+        log("debug", f"Failed to flash taskbar: {exc}")
 
 
 def delete_downloads() -> None:
@@ -637,6 +659,7 @@ class VerifyGameDialog(tk.Toplevel):
             self.after(
                 0,
                 lambda: (
+                    flash_taskbar(self.master),
                     messagebox.showerror(
                         "Verification failed",
                         f"Anomaly exited with code {exit_code}. The game did not start cleanly, so installation cannot continue.",
@@ -751,6 +774,7 @@ class DownloaderApp:
         log("info", "Reached verify_game step, showing dialog")
         if isinstance(self.current_frame, InstallFrame):
             self.current_frame.set_step_running(self.verify_step)
+        flash_taskbar(self.root)
         VerifyGameDialog(self.root, on_continue=self._on_verify_continue)
 
     def _on_verify_continue(self):
@@ -768,6 +792,7 @@ class DownloaderApp:
         self.current_frame.destroy()
         self.current_frame = FinishFrame(self.root, on_finish=self._run_finish_actions)
         self.current_frame.pack(fill="both", expand=True)
+        flash_taskbar(self.root)
 
     def _run_finish_actions(self, selected, on_progress, on_done):
         """Run the actions the user checked, in the fixed order:
@@ -791,6 +816,8 @@ class DownloaderApp:
                 except Exception as exc:
                     log("error", f"Finish action '{key}' failed: {exc}")
                     errors.append(f"{label}: {exc}")
+            if errors:
+                self.root.after(0, lambda: flash_taskbar(self.root))
             self.root.after(0, lambda: on_done(errors))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -806,6 +833,7 @@ class DownloaderApp:
                 elif kind == "done":
                     if isinstance(self.current_frame, ProgressFrame):
                         self.current_frame.mark_done()
+                    flash_taskbar(self.root)
                 elif kind == "error":
                     message, *details = payload
                     log("error", f"Download failed: {message}")
@@ -814,6 +842,7 @@ class DownloaderApp:
                             self.current_frame.mark_failed(message)
                         else:
                             self.current_frame.overall_label.config(text="Failed: " + message)
+                    flash_taskbar(self.root)
                     messagebox.showerror("Download failed", message, parent=self.root)
                     self.root.destroy()
                     return
@@ -836,6 +865,7 @@ class DownloaderApp:
                     log("error", f"Installation failed: {message}")
                     if isinstance(self.current_frame, InstallFrame):
                         self.current_frame.mark_failed(message)
+                    flash_taskbar(self.root)
                     messagebox.showerror("Installation failed", message, parent=self.root)
                     self.root.destroy()
                     return
