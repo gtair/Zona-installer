@@ -19,7 +19,7 @@ from relocate import check_and_relocate, handle_deletion_argument
 
 MULTIPART_RE = re.compile(r"^(.*)\.(\d{3,})$")
 
-CONFIG_PATH = Path(__file__).parent / "config.yaml"
+CONFIG_PATH = Path(__file__).parent / "dependencies" / "config.yaml"
 DOWNLOADS_DIR = Path(__file__).parent / "downloads"
 ANOMALY_EXE = Path(__file__).parent / ".." / "anomaly" / "bin" / "AnomalyDX11AVX.exe"
 MO2_EXE = Path(__file__).parent / ".." / "mo2" / "modorganizer.exe"
