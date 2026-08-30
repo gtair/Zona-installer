@@ -9,6 +9,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -19,7 +20,6 @@ from log_custom import log
 from win_job import close_job, create_kill_on_close_job
 
 ARIA2C_PATH = Path(__file__).parent / "dependencies" / "aria2c.exe"
-PYTHONW_PATH = Path(__file__).parent / "dependencies" / "python" / "pythonw.exe"
 MAX_HASH_RETRIES = 3
 
 
@@ -99,15 +99,18 @@ class Aria2Client:
         if os.name != "nt":
             return
 
+        python_path = Path(sys.executable)
+
         rules_to_check = [
             ("Zona Installer Aria2c In", "in", ARIA2C_PATH),
             ("Zona Installer Aria2c Out", "out", ARIA2C_PATH),
-            ("Zona Installer Python In", "in", PYTHONW_PATH),
-            ("Zona Installer Python Out", "out", PYTHONW_PATH),
+            ("Zona Installer Python In", "in", python_path),
+            ("Zona Installer Python Out", "out", python_path),
         ]
 
         for rule_name, direction, program_path in rules_to_check:
             if not program_path.exists():
+                log("warning", f"Firewall target does not exist: {program_path}")
                 continue
 
             # Check if the rule already exists
@@ -129,7 +132,7 @@ class Aria2Client:
             ]
             try:
                 subprocess.run(add_cmd, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-                log("info", f"Firewall rule '{rule_name}' added")
+                log("info", f"Firewall rule '{rule_name}' added for {program_path}")
             except Exception as exc:
                 log("warning", f"Could not auto-configure firewall rule '{rule_name}': {exc}")
 
