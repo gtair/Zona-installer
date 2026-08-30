@@ -94,7 +94,36 @@ class Aria2Client:
         self._rpc_url = f"http://127.0.0.1:{self.rpc_port}/jsonrpc"
         self._request_id = 0
 
+    def _ensure_firewall_rule(self):
+        if os.name != "nt":
+            return
+        rule_name = "Zona Installer Aria2c"
+        
+        # Check if the rule already exists
+        check_cmd = ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule_name}"]
+        result = subprocess.run(check_cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        
+        if "No rules match" not in result.stdout:
+            log("debug", f"Firewall rule '{rule_name}' already exists, skipping creation")
+            return  # Rule already exists, do nothing
+
+        # Add the rule if it doesn't exist yet
+        add_cmd = [
+            "netsh", "advfirewall", "firewall", "add", "rule",
+            f"name={rule_name}",
+            "dir=in",
+            "action=allow",
+            f"program={str(ARIA2C_PATH)}",
+            "enable=yes"
+        ]
+        try:
+            subprocess.run(add_cmd, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+            log("info", f"Firewall rule '{rule_name}' added to allow aria2c")
+        except Exception as exc:
+            log("warning", f"Could not auto-configure firewall rule: {exc}")
+
     def start(self):
+        self._ensure_firewall_rule()
         if not ARIA2C_PATH.exists():
             raise FileNotFoundError(f"aria2c executable not found at {ARIA2C_PATH}")
         if self.process is not None:
