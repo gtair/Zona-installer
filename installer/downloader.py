@@ -19,6 +19,7 @@ from log_custom import log
 from win_job import close_job, create_kill_on_close_job
 
 ARIA2C_PATH = Path(__file__).parent / "dependencies" / "aria2c.exe"
+PYTHONW_PATH = Path(__file__).parent / "dependencies" / "python" / "pythonw.exe"
 MAX_HASH_RETRIES = 3
 
 
@@ -97,30 +98,40 @@ class Aria2Client:
     def _ensure_firewall_rule(self):
         if os.name != "nt":
             return
-        rule_name = "Zona Installer Aria2c"
-        
-        # Check if the rule already exists
-        check_cmd = ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule_name}"]
-        result = subprocess.run(check_cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        
-        if "No rules match" not in result.stdout:
-            log("debug", f"Firewall rule '{rule_name}' already exists, skipping creation")
-            return  # Rule already exists, do nothing
 
-        # Add the rule if it doesn't exist yet
-        add_cmd = [
-            "netsh", "advfirewall", "firewall", "add", "rule",
-            f"name={rule_name}",
-            "dir=in",
-            "action=allow",
-            f"program={str(ARIA2C_PATH)}",
-            "enable=yes"
+        rules_to_check = [
+            ("Zona Installer Aria2c In", "in", ARIA2C_PATH),
+            ("Zona Installer Aria2c Out", "out", ARIA2C_PATH),
+            ("Zona Installer Python In", "in", PYTHONW_PATH),
+            ("Zona Installer Python Out", "out", PYTHONW_PATH),
         ]
-        try:
-            subprocess.run(add_cmd, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-            log("info", f"Firewall rule '{rule_name}' added to allow aria2c")
-        except Exception as exc:
-            log("warning", f"Could not auto-configure firewall rule: {exc}")
+
+        for rule_name, direction, program_path in rules_to_check:
+            if not program_path.exists():
+                continue
+
+            # Check if the rule already exists
+            check_cmd = ["netsh", "advfirewall", "firewall", "show", "rule", f"name={rule_name}"]
+            result = subprocess.run(check_cmd, capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+
+            if "No rules match" not in result.stdout:
+                log("debug", f"Firewall rule '{rule_name}' already exists, skipping creation")
+                continue
+
+            # Add the rule if it doesn't exist yet
+            add_cmd = [
+                "netsh", "advfirewall", "firewall", "add", "rule",
+                f"name={rule_name}",
+                f"dir={direction}",
+                "action=allow",
+                f"program={str(program_path)}",
+                "enable=yes"
+            ]
+            try:
+                subprocess.run(add_cmd, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+                log("info", f"Firewall rule '{rule_name}' added")
+            except Exception as exc:
+                log("warning", f"Could not auto-configure firewall rule '{rule_name}': {exc}")
 
     def start(self):
         self._ensure_firewall_rule()
