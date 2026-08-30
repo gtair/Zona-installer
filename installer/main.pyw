@@ -49,13 +49,21 @@ def load_config() -> dict:
         return yaml.safe_load(handle)
 
 
+def _choice_matches(choice_value, selected):
+    """A choice field can be a single id string ('install_zona') or a list of ids
+    (['update_zona', 'install_zona']). Matches if any of the given ids was selected."""
+    if isinstance(choice_value, (list, tuple, set)):
+        return any(c in selected for c in choice_value)
+    return choice_value in selected
+
+
 def get_downloads_for_selection(assets, selected_ids):
     """Return (url, destination, expected_hash) tuples for base assets plus any asset
-    tied to a choice the user selected."""
+    tied to a choice (or any choice in a list of choices) the user selected."""
     selected = set(selected_ids)
     entries = []
     for asset in assets:
-        if asset["choice"] == "base" or asset["choice"] in selected:
+        if asset["choice"] == "base" or _choice_matches(asset["choice"], selected):
             entries.append((asset["url"], DOWNLOADS_DIR / asset["file"], asset.get("sha256")))
     log("debug", f"Resolved manifest for selection {sorted(selected)}: {len(entries)} file(s)")
     return entries
@@ -63,12 +71,12 @@ def get_downloads_for_selection(assets, selected_ids):
 
 def get_steps_for_selection(steps, selected_ids):
     """Return steps filtered to include base steps and steps tied to selected choices.
-    Steps without a 'choice' field always run. Steps with a 'choice' field only run
-    if that choice is in selected_ids."""
+    Steps without a 'choice' field always run. Steps with a 'choice' field (a single id
+    or a list of ids) only run if at least one of those ids is in selected_ids."""
     selected = set(selected_ids)
     filtered = []
     for step in steps:
-        if "choice" not in step or step["choice"] in selected:
+        if "choice" not in step or _choice_matches(step["choice"], selected):
             filtered.append(step)
     log("debug", f"Resolved steps for selection {sorted(selected)}: {len(filtered)} step(s)")
     return filtered
