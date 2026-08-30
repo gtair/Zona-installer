@@ -11,7 +11,6 @@ import urllib.error
 import urllib.request
 import sys
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional
 from urllib.parse import urlparse
@@ -22,13 +21,6 @@ from win_job import close_job, create_kill_on_close_job
 ARIA2C_PATH = Path(__file__).parent / "dependencies" / "aria2c.exe"
 MAX_HASH_RETRIES = 3
 
-
-def _is_moddb_url(url: str) -> bool:
-    hostname = (urlparse(url).hostname or "").lower()
-    return hostname == "moddb.com" or hostname.endswith(".moddb.com")
-
-
-@lru_cache(maxsize=256)
 def resolve_moddb_url(url: str) -> str:
     """Resolve a ModDB page to the current mirror URL."""
     if not _is_moddb_url(url) or "/downloads/mirror/" in url:
@@ -56,8 +48,15 @@ def resolve_moddb_url(url: str) -> str:
     match = re.search(r"(https://www\.moddb\.com/downloads/mirror/\d+/\d+/[a-f0-9]+)", response.text)
     if not match:
         raise RuntimeError(f"No ModDB mirror link found on {response.url}")
-    log("debug", f"Resolved ModDB mirror: {match.group(1)}")
-    return match.group(1)
+
+    mirror_url = match.group(1)
+    log("debug", f"Resolved ModDB mirror: {mirror_url}")
+    return mirror_url
+
+
+def _is_moddb_url(url: str) -> bool:
+    hostname = (urlparse(url).hostname or "").lower()
+    return hostname == "moddb.com" or hostname.endswith(".moddb.com")
 
 
 @dataclass
@@ -162,9 +161,9 @@ class Aria2Client:
             "--retry-wait=10",
             "--connect-timeout=30",
             "--timeout=60",
-            "--lowest-speed-limit=10K",
             "--check-integrity=true",
             "--auto-save-interval=10",
+            "--disable-ipv6=true",
         ]
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         self.process = subprocess.Popen(
