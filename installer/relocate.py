@@ -187,6 +187,7 @@ def check_and_relocate():
         - should_continue: True if we should continue execution, False if we should exit
         - target_dir: Path to the current/correct installer directory
     """
+
     current_dir = Path(__file__).parent
     current_drive = current_dir.drive.rstrip(":")
     expected_root = Path(f"{current_drive}:/Zona/installer")

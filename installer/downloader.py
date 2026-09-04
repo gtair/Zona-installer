@@ -3,7 +3,6 @@
 import hashlib
 import json
 import os
-import re
 import secrets
 import subprocess
 import time
@@ -17,41 +16,99 @@ from urllib.parse import urlparse
 
 from log_custom import log
 from win_job import close_job, create_kill_on_close_job
+from webview_resolver import RESULT_MARKER
 
 ARIA2C_PATH = Path(__file__).parent / "dependencies" / "aria2c.exe"
+WEBVIEW_RESOLVER_PATH = Path(__file__).parent / "webview_resolver.py"
 MAX_HASH_RETRIES = 3
+RESOLVER_TIMEOUT = 45.0       # hard ceiling per subprocess attempt
+RESOLVER_MAX_ATTEMPTS = 2     # retry once on transient failure/timeout
 
-def resolve_moddb_url(url: str) -> str:
+
+@dataclass
+class ResolvedDownload:
+    """A URL ready to hand to aria2c, plus any headers it needs to succeed.
+
+    Non-ModDB URLs get an empty headers list. ModDB URLs get a Referer
+    (and, when available, a Cookie) captured from the browser session that
+    resolved them - aria2c is a bare HTTP client with no session of its
+    own, so without these the resolved mirror URL can still come back 403
+    even though resolution itself succeeded.
+    """
+
+    url: str
+    headers: List[str] = None
+
+    def __post_init__(self):
+        if self.headers is None:
+            self.headers = []
+
+def resolve_moddb_url(url: str) -> ResolvedDownload:
     """Resolve a ModDB page to the current mirror URL."""
     if not _is_moddb_url(url) or "/downloads/mirror/" in url:
-        return url
+        return ResolvedDownload(url=url)
 
     log("debug", f"Resolving ModDB mirror for {url}")
-    try:
-        from curl_cffi import requests
-    except ImportError as exc:
-        raise RuntimeError("ModDB downloads require the curl-cffi package") from exc
 
-    response = requests.get(url, impersonate="chrome", timeout=30)
-    if response.status_code != 200:
-        raise RuntimeError(f"ModDB returned status {response.status_code} for {url}")
+    last_error: Optional[str] = None
+    for attempt in range(1, RESOLVER_MAX_ATTEMPTS + 1):
+        try:
+            resolved = _resolve_via_webview_subprocess(url)
+            log("debug", f"Resolved ModDB mirror: {resolved.url}")
+            return resolved
+        except (subprocess.TimeoutExpired, RuntimeError) as exc:
+            last_error = str(exc)
+            log(
+                "warning",
+                f"ModDB resolve attempt {attempt}/{RESOLVER_MAX_ATTEMPTS} failed: {last_error}",
+            )
+            if attempt < RESOLVER_MAX_ATTEMPTS:
+                time.sleep(1.5)
 
-    if "/downloads/start/" not in response.url:
-        match = re.search(r'href="[^"]*?/downloads/start/(\d+)"', response.text)
-        if not match:
-            raise RuntimeError(f"Could not find a ModDB download link on {url}")
-        start_url = f"https://www.moddb.com/downloads/start/{match.group(1)}"
-        response = requests.get(start_url, impersonate="chrome", timeout=30)
-        if response.status_code != 200:
-            raise RuntimeError(f"ModDB returned status {response.status_code} for the download link")
+    raise RuntimeError(f"Could not resolve ModDB mirror for {url}: {last_error}")
 
-    match = re.search(r"(https://www\.moddb\.com/downloads/mirror/\d+/\d+/[a-f0-9]+)", response.text)
-    if not match:
-        raise RuntimeError(f"No ModDB mirror link found on {response.url}")
 
-    mirror_url = match.group(1)
-    log("debug", f"Resolved ModDB mirror: {mirror_url}")
-    return mirror_url
+def _resolve_via_webview_subprocess(url: str) -> ResolvedDownload:
+    if not WEBVIEW_RESOLVER_PATH.exists():
+        raise RuntimeError(f"webview resolver script not found at {WEBVIEW_RESOLVER_PATH}")
+
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    result = subprocess.run(
+        [sys.executable, str(WEBVIEW_RESOLVER_PATH), url],
+        capture_output=True,
+        text=True,
+        timeout=RESOLVER_TIMEOUT,
+        creationflags=creationflags,
+    )
+
+    output_line = ""
+    for line in (result.stdout or "").splitlines():
+        if line.startswith(RESULT_MARKER):
+            output_line = line
+            break
+
+    ok_prefix = f"{RESULT_MARKER}OK:"
+    error_prefix = f"{RESULT_MARKER}ERROR:"
+
+    if output_line.startswith(ok_prefix):
+        try:
+            payload = json.loads(output_line[len(ok_prefix):])
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"malformed resolver output: {exc}") from exc
+
+        headers = [f"Referer: {payload['referer']}"]
+        if payload.get("cookie"):
+            headers.append(f"Cookie: {payload['cookie']}")
+        return ResolvedDownload(url=payload["url"], headers=headers)
+
+    if output_line.startswith(error_prefix):
+        raise RuntimeError(output_line[len(error_prefix):].strip())
+
+    stderr_tail = (result.stderr or "").strip().splitlines()[-5:]
+    raise RuntimeError(
+        f"webview resolver produced no result (exit={result.returncode}); "
+        f"stderr: {' | '.join(stderr_tail) if stderr_tail else '(empty)'}"
+    )
 
 
 def _is_moddb_url(url: str) -> bool:
@@ -157,13 +214,23 @@ class Aria2Client:
             "--split=4",
             "--max-connection-per-server=4",
             "--min-split-size=10M",
-            "--max-tries=0",
+            # Bounded, not infinite: an unrecoverable 403/404 with
+            # max-tries=0 will retry forever, saturating aria2c's worker
+            # threads and starving RPC responsiveness for every other
+            # queued download (this is what "lost contact with aria2c:
+            # timed out" on unrelated files usually means in practice).
+            "--max-tries=5",
             "--retry-wait=10",
             "--connect-timeout=30",
             "--timeout=60",
             "--check-integrity=true",
             "--auto-save-interval=10",
             "--disable-ipv6=true",
+            # Many mirror/CDN hosts (ModDB's included) block or leech-check
+            # the default "aria2/x.x.x" User-Agent outright. A normal
+            # browser UA avoids that for every download, not just ModDB's.
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         ]
         creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         self.process = subprocess.Popen(
@@ -197,7 +264,7 @@ class Aria2Client:
                 time.sleep(0.1)
         raise TimeoutError(f"aria2c did not become ready in time: {last_error}")
 
-    def call(self, method: str, params: Optional[list] = None):
+    def call(self, method: str, params: Optional[list] = None, _retry: bool = True):
         self._request_id += 1
         payload_params = [f"token:{self.secret}"]
         if params:
@@ -216,19 +283,33 @@ class Aria2Client:
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            with urllib.request.urlopen(request, timeout=10) as response:
                 body = json.loads(response.read().decode("utf-8"))
         except urllib.error.URLError as exc:
+            # aria2c can briefly stop answering RPC calls while it's busy
+            # (e.g. mid-retry-storm on a bad URL) without actually having
+            # died - one short retry avoids treating that as lost contact.
+            if _retry:
+                time.sleep(1.0)
+                return self.call(method, params, _retry=False)
             raise Aria2RpcError(f"failed to reach aria2c rpc: {exc}") from exc
 
         if "error" in body:
             raise Aria2RpcError(body["error"].get("message", "unknown aria2 error"))
         return body["result"]
 
-    def add_uri(self, url: str, dest_dir: Path, filename: Optional[str] = None) -> str:
+    def add_uri(
+        self,
+        url: str,
+        dest_dir: Path,
+        filename: Optional[str] = None,
+        headers: Optional[List[str]] = None,
+    ) -> str:
         options = {"dir": str(dest_dir)}
         if filename:
             options["out"] = filename
+        if headers:
+            options["header"] = headers
         return self.call("aria2.addUri", [[url], options])
 
     def tell_status(self, gid: str) -> dict:
@@ -304,7 +385,9 @@ class Downloader:
             self.on_update(self.items)
 
             resolved_url = resolve_moddb_url(item.url)
-            item.gid = self.client.add_uri(resolved_url, item.dest_path.parent, item.dest_path.name)
+            item.gid = self.client.add_uri(
+                resolved_url.url, item.dest_path.parent, item.dest_path.name, headers=resolved_url.headers
+            )
             item.total_length = 0
             item.completed_length = 0
             item.download_speed = 0
@@ -334,7 +417,9 @@ class Downloader:
                     item.status = "resolving"
                     self.on_update(self.items)
                 resolved_url = resolve_moddb_url(item.url)
-                item.gid = self.client.add_uri(resolved_url, item.dest_path.parent, item.dest_path.name)
+                item.gid = self.client.add_uri(
+                    resolved_url.url, item.dest_path.parent, item.dest_path.name, headers=resolved_url.headers
+                )
                 item.status = "waiting"
                 log("debug", f"{item.dest_path.name}: queued (gid={item.gid})")
 
