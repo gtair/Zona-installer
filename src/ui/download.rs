@@ -51,7 +51,7 @@ pub fn draw(ui: &mut egui::Ui, view: &ViewModel, _events: &mut Vec<Event>) {
     // Resume-on-failure is fixed copy: aria2c's `--continue` guarantees it, and
     // resume is carried by the byte counts, not a separate flag.
     ui.horizontal_wrapped(|ui| {
-        ui.label("S.T.A.L.K.E.R. Zona windows installer. Made by ");
+        ui.label("S.T.A.L.K.E.R. Zona windows installer. Made by");
         ui.hyperlink_to("Gtair", "https://github.com/gtair")
     });
 }
