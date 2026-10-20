@@ -21,7 +21,7 @@ use zona_installer::app::{DownloadRow, DownloadStatus, Event, ViewModel};
 /// calls.
 pub fn draw(ui: &mut egui::Ui, view: &ViewModel, _events: &mut Vec<Event>) {
     ui.heading("Downloading");
-    ui.label("Your selected files are being downloaded. A split archive is shown as one entry.");
+    ui.label("Your selected configuration is being downloaded.");
 
     // What the stage is doing right now (hashing, resolving, downloading, verifying).
     if let Some(status) = &view.download_status {
@@ -50,7 +50,10 @@ pub fn draw(ui: &mut egui::Ui, view: &ViewModel, _events: &mut Vec<Event>) {
 
     // Resume-on-failure is fixed copy: aria2c's `--continue` guarantees it, and
     // resume is carried by the byte counts, not a separate flag.
-    ui.label("If a download fails or is interrupted, it resumes automatically.");
+    ui.horizontal_wrapped(|ui| {
+        ui.label("S.T.A.L.K.E.R. Zona windows installer. Made by ");
+        ui.hyperlink_to("Gtair", "https://github.com/gtair")
+    });
 }
 
 /// The bar fraction for one row: `pct / 100`, `1.0` when Completed, or `None`
@@ -542,7 +545,7 @@ mod tests {
         let texts = paint(&view(real_config_rows()));
         assert!(
             texts.iter().any(|(_, text)| text
-                == "If a download fails or is interrupted, it resumes automatically."),
+                == "S.T.A.L.K.E.R. Zona windows installer. Made by "),
             "the resume note is painted"
         );
     }

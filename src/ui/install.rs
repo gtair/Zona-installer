@@ -22,7 +22,7 @@ const START_GAME_KEY: &str = "__start_game__";
 
 /// The message shown while the verify-game gate is active.
 const VERIFY_MESSAGE: &str =
-    "Verify that the modded exes are installed, then close the game. Do not load into a save.";
+    "Launch the game and, once you load into the main menu, make sure you see \"S.T.A.L.K.E.R. Anomaly 1.5.3 Modded Exes\". Do not start a save.";
 
 /// Renders the overall install bar, the live detail line, the step info line and
 /// the context-dependent button.
@@ -31,7 +31,7 @@ pub fn draw(ui: &mut egui::Ui, view: &ViewModel, events: &mut Vec<Event>) {
     clear_recorded();
 
     ui.heading("Installing");
-    ui.label("Your selected files are being installed.");
+    ui.label("Your selected configuration is being installed.");
     ui.add_space(8.0);
 
     // One overall bar; the running step's percentage smooths it.
