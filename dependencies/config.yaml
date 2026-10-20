@@ -74,7 +74,7 @@ choices:
 assets:
   - id: download_anomaly
     file: anomaly.7z
-    url: https://www.moddb.com/mods/stalker-anomaly/downloads/stalker-anomaly-153
+    url: "magnet:?xt=urn:btih:205676f90498f2be3900a3eb0d29b9f50a591fa1&dn=Anomaly-1.5.3-Full.7z&tr=udp://bt2.archive.org:6969/announce&tr=udp://tracker.opentrackr.org:1337/announce&tr=udp://bt1.archive.org:6969/announce&tr=udp://tracker.torrent.eu.org:451/announce"
     sha256: "e564d9110e673eacfa5604b0837f6e6208eae4cd46cd5682326ed59f931527ae"
     choice: install_zona
 
