@@ -1,0 +1,24 @@
+[package]
+name = "zona-installer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "zona_installer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "zona-installer"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "=0.32.3", default-features = false, features = ["default_fonts", "glow"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_yaml = "=0.9.34"
+sha2 = "=0.10.9"
+windows-sys = { version = "=0.60.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "=0.60.0", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+regex = "=1.13.1"
+thiserror = "=2.0.21"
+log = "=0.4.34"
