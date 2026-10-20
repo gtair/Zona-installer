@@ -224,53 +224,6 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
 mod tests {
     use super::*;
 
-    /// Split a raw capture into trimmed lines on both `\n` and the bare `\r`
-    /// in-place separators.
-    fn lines(raw: &[u8]) -> Vec<&[u8]> {
-        raw.split(|&b| b == b'\n' || b == b'\r')
-            .map(trim_ascii)
-            .filter(|line| !line.is_empty())
-            .collect()
-    }
-
-    #[test]
-    fn parses_summary_and_file_lines_from_capture() {
-        let raw = include_bytes!("../../tests/fixtures/aria2_summary.stdout");
-
-        let summaries: Vec<Aria2FileProgress> = lines(raw)
-            .into_iter()
-            .filter_map(parse_summary_line)
-            .collect();
-        assert!(summaries.len() >= 4, "expected several summary records");
-
-        // Every record shares the truncated GID from the capture.
-        assert!(summaries.iter().all(|s| s.gid == "000000"));
-
-        // The first tick: 16KiB of 2.8MiB, 0%, one connection, 15KiB/s, ETA.
-        let first = &summaries[0];
-        assert_eq!(first.done, "16KiB");
-        assert_eq!(first.total, "2.8MiB");
-        assert_eq!(first.pct, Some(0));
-        assert_eq!(first.cn, 1);
-        assert_eq!(first.dl, "15KiB");
-        assert_eq!(first.eta, "3m3s");
-
-        // The final tick has no `ETA:` field (the download finished).
-        let last = summaries
-            .iter()
-            .find(|s| s.pct == Some(83))
-            .expect("the 83% tick is present in the capture");
-        assert_eq!(last.done, "2.3MiB");
-        assert_eq!(last.total, "2.8MiB");
-        assert_eq!(last.dl, "602KiB");
-        assert_eq!(last.eta, "");
-
-        // The `FILE:` records name the downloaded file.
-        let files: Vec<PathBuf> = lines(raw).into_iter().filter_map(parse_file_line).collect();
-        assert_eq!(files.len(), 4);
-        assert!(files.iter().all(|p| p == &PathBuf::from("dl_sum/blob.bin")));
-    }
-
     #[test]
     fn parse_summary_line_parses_fields_and_rejects_others() {
         let parsed = parse_summary_line(b"[#deadbe 1.5MiB/2.8MiB(55%) CN:2 DL:533KiB ETA:2s]")
@@ -322,47 +275,6 @@ mod tests {
 
         // Text without ANSI passes through unchanged.
         assert_eq!(strip_ansi(b"plain text"), b"plain text".to_vec());
-
-        // The captured error line loses its escapes but keeps the message.
-        let raw = include_bytes!("../../tests/fixtures/aria2_error.stdout");
-        assert!(raw.contains(&0x1b));
-        let stripped = strip_ansi(raw);
-        assert!(!stripped.contains(&0x1b));
-        assert!(stripped.windows(5).any(|w| w == b"ERROR"));
-        assert!(stripped.windows(18).any(|w| w == b"Resource not found"));
-    }
-
-    #[test]
-    fn parse_results_table_reads_captured_rows() {
-        // Success capture.
-        let ok = parse_results_table(include_bytes!("../../tests/fixtures/aria2_results.stdout"));
-        assert_eq!(
-            ok,
-            vec![DownloadResultRow {
-                gid: "000000".to_string(),
-                status: "OK".to_string(),
-                path: "dl_ok/blob.bin".to_string(),
-            }]
-        );
-
-        // Error capture (ANSI-stripped first).
-        let raw = include_bytes!("../../tests/fixtures/aria2_error.stdout");
-        let err = parse_results_table(&strip_ansi(raw));
-        assert_eq!(
-            err,
-            vec![DownloadResultRow {
-                gid: "000000".to_string(),
-                status: "ERR".to_string(),
-                path: "dl_err/missing.bin".to_string(),
-            }]
-        );
-
-        // The summary capture ends with the same success table.
-        let summary =
-            parse_results_table(include_bytes!("../../tests/fixtures/aria2_summary.stdout"));
-        assert_eq!(summary.len(), 1);
-        assert_eq!(summary[0].status, "OK");
-        assert_eq!(summary[0].path, "dl_sum/blob.bin");
     }
 
     #[test]

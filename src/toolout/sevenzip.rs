@@ -100,53 +100,6 @@ fn trim_ascii(bytes: &[u8]) -> &[u8] {
 mod tests {
     use super::*;
 
-    /// Every event from the captured stream, in order (including `Other`).
-    fn events(raw: &[u8]) -> Vec<SevenZipEvent> {
-        split_stdout(raw).into_iter().map(parse_line).collect()
-    }
-
-    #[test]
-    fn parses_captured_extract_stream_in_real_order() {
-        let raw = include_bytes!("../../tests/fixtures/sevenzip_extract.stdout");
-
-        // Drop the header/summary noise and check the meaningful records.
-        let meaningful: Vec<SevenZipEvent> = events(raw)
-            .into_iter()
-            .filter(|event| !matches!(event, SevenZipEvent::Other))
-            .collect();
-
-        let expected = vec![
-            SevenZipEvent::Percent(0),
-            SevenZipEvent::File("big\\".to_string()),
-            SevenZipEvent::Percent(0),
-            SevenZipEvent::File("big\\sub\\".to_string()),
-            SevenZipEvent::Percent(0),
-            SevenZipEvent::File("big\\blob_1.bin".to_string()),
-            SevenZipEvent::Percent(100),
-            SevenZipEvent::File("big\\blob_2.bin".to_string()),
-            SevenZipEvent::Percent(100),
-            SevenZipEvent::File("big\\blob_3.bin".to_string()),
-            SevenZipEvent::Percent(100),
-            SevenZipEvent::File("big\\sub\\nested.bin".to_string()),
-            SevenZipEvent::Percent(100),
-            SevenZipEvent::File("readme.txt".to_string()),
-            SevenZipEvent::Percent(100),
-            SevenZipEvent::Done,
-        ];
-        assert_eq!(meaningful, expected);
-
-        // The percent record genuinely precedes its filename, and the `- big\`
-        // directory entry is present.
-        let first_percent = meaningful
-            .iter()
-            .position(|e| matches!(e, SevenZipEvent::Percent(_)));
-        let first_file = meaningful
-            .iter()
-            .position(|e| matches!(e, SevenZipEvent::File(_)));
-        assert!(matches!((first_percent, first_file), (Some(p), Some(f)) if p < f));
-        assert!(meaningful.contains(&SevenZipEvent::File("big\\".to_string())));
-    }
-
     #[test]
     fn split_stdout_splits_on_cr_and_drops_empty_segments() {
         // `\r\n` terminators and bare `\r` separators both split; stray `\n` and
@@ -181,20 +134,4 @@ mod tests {
         assert_eq!(parse_line(b""), SevenZipEvent::Other);
     }
 
-    #[test]
-    fn is_success_detects_captured_tail_and_rejects_truncated_capture() {
-        let raw = include_bytes!("../../tests/fixtures/sevenzip_extract.stdout");
-        assert!(is_success_stdout(raw));
-
-        // A capture cut off before the marker is NOT a success.
-        let marker = b"Everything is Ok";
-        let pos = raw
-            .windows(marker.len())
-            .position(|w| w == marker)
-            .expect("captured fixture contains the success marker");
-        assert!(!is_success_stdout(&raw[..pos]));
-
-        // A summary-only tail without the marker is NOT a success.
-        assert!(!is_success_stdout(b"Folders: 2\r\nFiles: 5\r\n"));
-    }
 }

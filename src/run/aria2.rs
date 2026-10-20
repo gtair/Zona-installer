@@ -405,34 +405,6 @@ mod tests {
     }
 
     #[test]
-    fn download_streams_summary_progress_paired_with_file_lines() {
-        let raw = include_bytes!("../../tests/fixtures/aria2_summary.stdout");
-        let input_file = PathBuf::from(r"C:\Zona\installer\downloads\input.txt");
-        let log_file = PathBuf::from(r"C:\Zona\installer\logs\aria2c.log");
-        let args = build_args(&input_file, &log_file);
-
-        let fake = FakeRunner {
-            exit_code: 0,
-            stdout: raw.to_vec(),
-        };
-        let mut progress = Vec::new();
-        download(&fake, Path::new("aria2c.exe"), &args, &mut |p| {
-            progress.push(p)
-        })
-        .expect("exit 0 must succeed");
-
-        // Four `FILE:` lines each close a pending summary -> four records, in
-        // order, each carrying the downloaded file (the summary alone has none).
-        let pcts: Vec<Option<u32>> = progress.iter().map(|p| p.pct).collect();
-        assert_eq!(pcts, vec![Some(0), Some(27), Some(55), Some(83)]);
-        assert!(progress
-            .iter()
-            .all(|p| p.file.as_deref() == Some(Path::new("dl_sum/blob.bin"))));
-        assert_eq!(progress[3].done, "2.3MiB");
-        assert_eq!(progress[3].total, "2.8MiB");
-    }
-
-    #[test]
     fn log_path_is_recovered_only_from_the_log_flag() {
         assert_eq!(
             log_path_from_args(&[

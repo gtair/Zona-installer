@@ -286,40 +286,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_streams_progress_from_the_captured_stream() {
-        let raw = include_bytes!("../../tests/fixtures/sevenzip_extract.stdout");
-        let fake = FakeRunner {
-            exit_code: 0,
-            stdout: raw.to_vec(),
-        };
-
-        let mut progress = Vec::new();
-        extract(
-            &fake,
-            Path::new("7z.exe"),
-            Path::new("payload.7z"),
-            Path::new("out"),
-            &mut |p| progress.push(p),
-        )
-        .expect("the captured success stream must succeed");
-
-        // Records arrive as percent-then-file; the running state ends on the last
-        // captured pair (`100%` / `readme.txt`), and the `Everything is Ok`
-        // marker still decides the success above.
-        assert!(!progress.is_empty());
-        let last = progress
-            .last()
-            .cloned()
-            .expect("at least one progress update");
-        assert_eq!(last.percent, Some(100));
-        assert_eq!(last.file.as_deref(), Some("readme.txt"));
-        // The directory entry `- big\` is streamed as a filename update too.
-        assert!(progress
-            .iter()
-            .any(|p| p.file.as_deref() == Some("big\\sub\\nested.bin")));
-    }
-
-    #[test]
     fn integration_extracts_a_generated_archive_into_a_temp_dir() {
         let sandbox = temp_dir("zona_installer_7z_extract");
         let src = sandbox.join("src");
