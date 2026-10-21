@@ -22,3 +22,6 @@ windows = { version = "=0.60.0", features = ["Win32_Foundation", "Win32_System_C
 regex = "=1.13.1"
 thiserror = "=2.0.21"
 log = "=0.4.34"
+
+[build-dependencies]
+winres = "0.1"
