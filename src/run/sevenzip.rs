@@ -80,10 +80,20 @@ pub fn extract(
             });
         },
         None,
-    )?;
+    );
 
     // Emit any trailing record that was not terminated by a `\r`.
     lines.flush(&mut |line| apply_line(line, &mut progress, on_progress));
+
+    let exit_code = match output {
+        Ok(output) => output.exit_code,
+        // 7z already failed: log everything it printed so the run log carries the
+        // real reason (e.g. "Can not open output file") instead of a bare code.
+        Err(error) => {
+            log_7z_output(&stdout);
+            return Err(error);
+        }
+    };
 
     if is_success_stdout(&stdout) {
         log::debug!(
@@ -98,14 +108,32 @@ pub fn extract(
         log::debug!(
             target: "sevenzip:extract",
             "7z failure: exit code {} without the 'Everything is Ok' marker",
-            output.exit_code,
+            exit_code,
         );
+        log_7z_output(&stdout);
         Err(AppError::Tool {
             tool: SEVENZIP_TOOL,
             context: "extract archive (stdout did not report 'Everything is Ok')".to_string(),
-            exit_code: Some(output.exit_code),
+            exit_code: Some(exit_code),
             log_path: None,
         })
+    }
+}
+
+/// Logs the raw 7z output (stdout and stderr are merged by the runner) at ERROR
+/// level so a failed extraction reports the actual reason rather than just an
+/// exit code.
+///
+/// 7z separates its records with `\r` (and `\r\n`); each record becomes one log
+/// line so the run log stays readable.
+fn log_7z_output(raw: &[u8]) {
+    let text = String::from_utf8_lossy(raw);
+    for line in text
+        .split(['\r', '\n'])
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        log::error!(target: "sevenzip:extract", "7z output: {line}");
     }
 }
 
