@@ -1,4 +1,4 @@
-//! Pure parser for the bundled `7z.exe` stdout stream.
+//! Pure parser for the bundled `7za.exe` stdout stream.
 //!
 //! The real binary emits ordinary `\r\n`-terminated lines mixed with bare-`\r`
 //! in-place progress records; the percent record arrives before its filename.

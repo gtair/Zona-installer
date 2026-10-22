@@ -2,7 +2,7 @@
 //! relocation decision.
 //!
 //! [`run`] acquires the single-instance mutex, detects the root mode, verifies
-//! the bundled `aria2c.exe` / `7z.exe` exist, and computes whether the binary
+//! the bundled `aria2c.exe` / `7za.exe` exist, and computes whether the binary
 //! still has to be relocated to `<drive>:\Zona\installer`.
 //!
 //! Under the debug root override relocation and the self-delete trick are
@@ -67,7 +67,7 @@ pub fn parse_debug_options<I: IntoIterator<Item = OsString>>(args: I) -> DebugOp
 }
 
 /// The bundled tools that must exist before anything else runs.
-pub const REQUIRED_TOOLS: [&str; 2] = ["aria2c.exe", "7z.exe"];
+pub const REQUIRED_TOOLS: [&str; 2] = ["aria2c.exe", "7za.exe"];
 
 /// Runs the startup pre-flight for the directory the binary was launched from.
 ///
@@ -828,7 +828,7 @@ mod tests {
         // not need a real `<drive>:\` directory.
         let exe_dir = root.join("Zona").join("installer");
         write(&exe_dir.join("dependencies/aria2c.exe"), "x");
-        write(&exe_dir.join("dependencies/7z.exe"), "x");
+        write(&exe_dir.join("dependencies/7za.exe"), "x");
 
         let outcome =
             run_with_mutex(&exe_dir, &unique_mutex_name("ok")).expect("preflight should pass");
@@ -845,8 +845,8 @@ mod tests {
         let root = unique_temp_dir("missing");
         let exe_dir = root.join("Zona").join("installer");
         std::fs::create_dir_all(&exe_dir).expect("create installer dir");
-        // 7z.exe is present but aria2c.exe is not.
-        write(&exe_dir.join("dependencies/7z.exe"), "x");
+        // 7za.exe is present but aria2c.exe is not.
+        write(&exe_dir.join("dependencies/7za.exe"), "x");
 
         let error = run_with_mutex(&exe_dir, &unique_mutex_name("missing"))
             .expect_err("missing dependency must fail");
@@ -866,7 +866,7 @@ mod tests {
         let root = unique_temp_dir("notzona");
         let exe_dir = root.join("somewhere");
         write(&exe_dir.join("dependencies/aria2c.exe"), "x");
-        write(&exe_dir.join("dependencies/7z.exe"), "x");
+        write(&exe_dir.join("dependencies/7za.exe"), "x");
 
         let outcome =
             run_with_mutex(&exe_dir, &unique_mutex_name("notzona")).expect("preflight should pass");
@@ -880,7 +880,7 @@ mod tests {
     fn dev_override_uses_the_override_root_and_disables_relocation() {
         let override_root = unique_temp_dir("devroot");
         write(&override_root.join("dependencies/aria2c.exe"), "x");
-        write(&override_root.join("dependencies/7z.exe"), "x");
+        write(&override_root.join("dependencies/7za.exe"), "x");
         let exe_dir = unique_temp_dir("devexe");
 
         let outcome = preflight_checks(&exe_dir, RootMode::DevOverride(override_root.clone()))
@@ -899,7 +899,7 @@ mod tests {
         let root = unique_temp_dir("mutex");
         let exe_dir = root.join("Zona").join("installer");
         write(&exe_dir.join("dependencies/aria2c.exe"), "x");
-        write(&exe_dir.join("dependencies/7z.exe"), "x");
+        write(&exe_dir.join("dependencies/7za.exe"), "x");
         let name = unique_mutex_name("taken");
 
         // The first call acquires (and keeps) the gate; the second must see it.
@@ -1224,7 +1224,7 @@ mod tests {
         let root = unique_temp_dir("receive_delete");
         let exe_dir = root.join("Zona").join("installer");
         write(&exe_dir.join("dependencies/aria2c.exe"), "x");
-        write(&exe_dir.join("dependencies/7z.exe"), "x");
+        write(&exe_dir.join("dependencies/7za.exe"), "x");
         // A path shaped <anything>\Zona\installer so delete_old_folder accepts it.
         let old_dir = root.join("old").join("Zona").join("installer");
         write(&old_dir.join("keep.txt"), "x");
@@ -1258,7 +1258,7 @@ mod tests {
         let root = unique_temp_dir("receive_unshaped");
         let exe_dir = root.join("Zona").join("installer");
         write(&exe_dir.join("dependencies/aria2c.exe"), "x");
-        write(&exe_dir.join("dependencies/7z.exe"), "x");
+        write(&exe_dir.join("dependencies/7za.exe"), "x");
         // NOT shaped <anything>\Zona\installer: a permanent refusal, never fatal.
         let wrong = root.join("not_zona").join("installer");
         write(&wrong.join("keep.txt"), "x");

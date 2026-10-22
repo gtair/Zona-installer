@@ -259,7 +259,7 @@ mod tests {
         let mut cmd = Command::new("fake-tool");
         let result = run_tool(
             &fake,
-            "7z.exe",
+            "7za.exe",
             "extract archive",
             &mut cmd,
             &mut |chunk| received.extend_from_slice(chunk),
@@ -273,7 +273,7 @@ mod tests {
                 exit_code,
                 log_path,
             }) => {
-                assert_eq!(tool, "7z.exe");
+                assert_eq!(tool, "7za.exe");
                 assert_eq!(context, "extract archive");
                 assert_eq!(exit_code, Some(7));
                 assert_eq!(log_path, log);
@@ -287,7 +287,7 @@ mod tests {
     fn real_runner_runs_bundled_7z_listing_offline() {
         let exe = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("dependencies")
-            .join("7z.exe");
+            .join("7za.exe");
         let runner = RealRunner { job: None };
 
         let mut received = Vec::new();
@@ -307,9 +307,9 @@ mod tests {
 
     #[test]
     fn command_line_joins_the_program_and_its_arguments() {
-        let mut cmd = Command::new("7z.exe");
+        let mut cmd = Command::new("7za.exe");
         cmd.arg("x").arg(r"C:\Zona\a b\payload.7z");
-        assert_eq!(command_line(&cmd), r"7z.exe x C:\Zona\a b\payload.7z");
+        assert_eq!(command_line(&cmd), r"7za.exe x C:\Zona\a b\payload.7z");
 
         let bare = Command::new("aria2c.exe");
         assert_eq!(command_line(&bare), "aria2c.exe");

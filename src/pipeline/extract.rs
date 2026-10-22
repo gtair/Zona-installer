@@ -1,7 +1,7 @@
 //! `extract` step handler.
 //!
 //! Every archive — plain `.7z`, `.zip`, or a multipart `.7z.001` volume set — is
-//! extracted through the single bundled `7z.exe`, reusing the
+//! extracted through the single bundled `7za.exe`, reusing the
 //! [`crate::run::sevenzip::extract`] seam. This module owns the orchestration:
 //!
 //! - resolve `file` / `target` relative to the install root;
@@ -30,14 +30,14 @@ use crate::win32::job::JobHandle;
 use super::ProgressEvent;
 
 /// The bundled 7z binary name, resolved under `<install_root>\dependencies\`.
-const SEVENZIP_EXE: &str = "7z.exe";
+const SEVENZIP_EXE: &str = "7za.exe";
 
 /// Serializes the same-drive temp directory suffixes within one process.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The dispatch entry point for an `extract` step.
 ///
-/// Resolves the bundled `dependencies\7z.exe` under `install_root` and runs the
+/// Resolves the bundled `dependencies\7za.exe` under `install_root` and runs the
 /// handler with the real child runner. The 7z child is bound to a kill-on-close
 /// job object so it dies with the installer.
 pub fn extract_step(
@@ -339,11 +339,11 @@ mod tests {
         path
     }
 
-    /// The bundled `dependencies\7z.exe`.
+    /// The bundled `dependencies\7za.exe`.
     fn bundled_sevenzip() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("dependencies")
-            .join("7z.exe")
+            .join("7za.exe")
     }
 
     /// A step with every optional field empty; tests override what they need.

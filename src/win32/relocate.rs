@@ -597,7 +597,7 @@ mod tests {
         // logs/ must stay behind.
         write(&exe_dir.join("zona-installer.exe"), "fake exe");
         write(&exe_dir.join("dependencies/aria2c.exe"), "aria2c");
-        write(&exe_dir.join("dependencies/7z.exe"), "7z");
+        write(&exe_dir.join("dependencies/7za.exe"), "7z");
         write(&exe_dir.join("dependencies/config.yaml"), "config");
         write(
             &exe_dir.join("downloads/zona_multipart.7z.001"),
@@ -623,7 +623,7 @@ mod tests {
         // Destination has the binary and the whole dependencies tree...
         assert!(install_root.join("zona-installer.exe").exists());
         assert!(install_root.join("dependencies/aria2c.exe").exists());
-        assert!(install_root.join("dependencies/7z.exe").exists());
+        assert!(install_root.join("dependencies/7za.exe").exists());
         assert!(install_root.join("dependencies/config.yaml").exists());
         // ...but not downloads/ or logs/.
         assert!(!install_root.join("downloads").exists());

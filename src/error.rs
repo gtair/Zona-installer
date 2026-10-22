@@ -74,7 +74,7 @@ pub enum AppError {
         path: Option<PathBuf>,
         source: std::io::Error,
     },
-    /// A bundled child tool (`7z.exe` / `aria2c.exe`) failed.
+    /// A bundled child tool (`7za.exe` / `aria2c.exe`) failed.
     Tool {
         tool: &'static str,
         context: String,
@@ -205,7 +205,7 @@ mod tests {
                 source: io::Error::new(io::ErrorKind::NotFound, "no such file"),
             },
             AppError::Tool {
-                tool: "7z.exe",
+                tool: "7za.exe",
                 context: "extract archive".to_string(),
                 exit_code: Some(2),
                 log_path: Some(PathBuf::from(r"C:\Zona\installer\logs\run.log")),
@@ -289,7 +289,7 @@ mod tests {
         assert_eq!(fatal.log_path(), Some(log.as_path()));
 
         let tool_without_log = AppError::Tool {
-            tool: "7z.exe",
+            tool: "7za.exe",
             context: "extract".to_string(),
             exit_code: None,
             log_path: None,

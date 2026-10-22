@@ -1,6 +1,6 @@
 //! 7z extract command construction + progress streaming.
 //!
-//! Every archive is extracted through the bundled `7z.exe`. [`extract_args`]
+//! Every archive is extracted through the bundled `7za.exe`. [`extract_args`]
 //! builds the argument list; [`extract`] runs the binary through the
 //! [`ChildRunner`] seam, streams the progress stream to the pure parser
 //! ([`crate::toolout::sevenzip`]), and decides success.
@@ -16,9 +16,9 @@ use crate::error::{AppError, Result};
 use crate::toolout::sevenzip::{is_success_stdout, parse_line, SevenZipEvent, SevenZipProgress};
 
 /// The bundled tool name used in [`AppError::Tool`] reports.
-const SEVENZIP_TOOL: &str = "7z.exe";
+const SEVENZIP_TOOL: &str = "7za.exe";
 
-/// Build the `7z.exe` argument list for extracting `archive` into `target`.
+/// Build the `7za.exe` argument list for extracting `archive` into `target`.
 ///
 /// Exactly `x <archive> -o<target> -y -aoa -bb1 -bsp1`: `x` extracts with full
 /// paths, `-o<target>` names the output directory (no space), `-y -aoa` answers
@@ -235,11 +235,11 @@ mod tests {
         path
     }
 
-    /// The bundled `dependencies\7z.exe`.
+    /// The bundled `dependencies\7za.exe`.
     fn bundled_sevenzip() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("dependencies")
-            .join("7z.exe")
+            .join("7za.exe")
     }
 
     #[test]
@@ -269,7 +269,7 @@ mod tests {
     fn extract_requires_exit_zero_and_the_success_marker() {
         let archive = Path::new("payload.7z");
         let target = Path::new("out");
-        let exe = Path::new("7z.exe");
+        let exe = Path::new("7za.exe");
 
         // Exit 0 + marker -> success.
         let ok = FakeRunner {
@@ -289,7 +289,7 @@ mod tests {
             AppError::Tool {
                 tool, exit_code, ..
             } => {
-                assert_eq!(tool, "7z.exe");
+                assert_eq!(tool, "7za.exe");
                 assert_eq!(exit_code, Some(0));
             }
             other => panic!("expected a Tool error, got {other:?}"),
@@ -306,7 +306,7 @@ mod tests {
             AppError::Tool {
                 tool, exit_code, ..
             } => {
-                assert_eq!(tool, "7z.exe");
+                assert_eq!(tool, "7za.exe");
                 assert_eq!(exit_code, Some(2));
             }
             other => panic!("expected a Tool error, got {other:?}"),
@@ -375,7 +375,7 @@ mod tests {
             AppError::Tool {
                 tool, exit_code, ..
             } => {
-                assert_eq!(tool, "7z.exe");
+                assert_eq!(tool, "7za.exe");
                 assert!(
                     matches!(exit_code, Some(code) if code != 0),
                     "unexpected exit code {exit_code:?}"

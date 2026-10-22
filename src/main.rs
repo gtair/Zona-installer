@@ -151,8 +151,7 @@ fn report_startup_failure(message: &str) {
     );
 }
 
-/// The application icon, embedded at compile time so the window can always show
-/// it without depending on the shipped `dependencies\icon.ico` file.
+/// The application icon
 static APP_ICON_ICO: &[u8] = include_bytes!("../dependencies/icon.ico");
 
 /// Decodes the window icon from the embedded `.ico` bytes.

@@ -1,6 +1,6 @@
 //! Win32 job-object wrapper.
 //!
-//! Child tools (`7z.exe`, `aria2c.exe`) are assigned to a job object configured
+//! Child tools (`7za.exe`, `aria2c.exe`) are assigned to a job object configured
 //! with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: closing the last handle terminates
 //! every member process, so a child can never outlive the installer and keep
 //! file handles on the install folder.
