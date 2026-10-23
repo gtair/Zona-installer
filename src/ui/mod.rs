@@ -10,4 +10,5 @@ pub mod choice;
 pub mod download;
 pub mod finish;
 pub mod install;
+pub mod launcher;
 pub mod relocation;

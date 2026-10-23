@@ -16,7 +16,9 @@ use std::time::Duration;
 
 use crate::error::{AppError, ErrorId, Result};
 use crate::paths::{self, RootMode};
+use crate::update;
 use crate::win32::relocate::{self, SelfDeleteCommand};
+use crate::win32::shortcut::{self, ShortcutTarget};
 use crate::win32::single_instance::{self, AcquireOutcome, SingleInstance};
 
 /// The result of [`run`].
@@ -29,6 +31,9 @@ pub struct PreflightOutcome {
     pub install_root: PathBuf,
     /// Whether the binary must be relocated before the normal flow may start.
     pub needs_relocation: bool,
+    /// Whether the launcher window was requested (`--launcher`), forwarded to
+    /// the relocated copy when a relocation hand-off happens.
+    pub launcher: bool,
     /// The debug flags parsed from the launch arguments, available before the
     /// config is read so logging can be initialised first thing.
     pub debug: DebugOptions,
@@ -66,6 +71,20 @@ pub fn parse_debug_options<I: IntoIterator<Item = OsString>>(args: I) -> DebugOp
     options
 }
 
+/// Whether `--launcher` was passed on the command line.
+///
+/// The launcher flag asks the installer to open the launcher window (its three
+/// options) instead of the normal flow; when the binary must still be relocated
+/// it is forwarded to the relocated copy.
+pub fn parse_launcher_flag<I: IntoIterator<Item = OsString>>(args: I) -> bool {
+    args.into_iter()
+        .any(|arg| arg.to_string_lossy() == LAUNCHER_FLAG)
+}
+
+/// The command-line flag that opens the launcher window instead of the normal
+/// flow (also forwarded to the relocated copy during a hand-off).
+pub const LAUNCHER_FLAG: &str = "--launcher";
+
 /// The bundled tools that must exist before anything else runs.
 pub const REQUIRED_TOOLS: [&str; 2] = ["aria2c.exe", "7za.exe"];
 
@@ -82,6 +101,7 @@ pub const REQUIRED_TOOLS: [&str; 2] = ["aria2c.exe", "7za.exe"];
 pub fn run(exe_dir: &Path) -> Result<PreflightOutcome> {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let debug = parse_debug_options(args.iter().cloned());
+    let launcher = parse_launcher_flag(args.iter().cloned());
 
     // Open the console and the log file before any other work so pre-flight is
     // logged too.
@@ -103,11 +123,20 @@ pub fn run(exe_dir: &Path) -> Result<PreflightOutcome> {
         &mut sleep,
     )?;
     outcome.debug = debug;
+    outcome.launcher = launcher;
     // Hold the log handle for the process lifetime (exactly like the leaked
     // single-instance guard): dropping it would close the file and clear the
     // global sink while the run is still in progress.
     if let Some(handle) = log {
         std::mem::forget(handle);
+    }
+    // Self-update: only from a canonical shipped install (post-relocation), and
+    // never under the debug root override. A newer release hands off to the
+    // PowerShell script and this process exits immediately.
+    if matches!(outcome.mode, RootMode::Shipped) && !outcome.needs_relocation {
+        if update::maybe_self_update(exe_dir, launcher, debug) {
+            std::process::exit(0);
+        }
     }
     Ok(outcome)
 }
@@ -179,7 +208,13 @@ fn run_with<I: IntoIterator<Item = OsString>>(
         &mut delete,
     );
     log_hand_off_outcome(&outcome);
-    preflight_checks(exe_dir, mode)
+    let outcome = preflight_checks(exe_dir, mode)?;
+    // Running from its canonical home: ensure the desktop shortcut the user
+    // needs to relaunch the installer after the original copy is deleted.
+    if !outcome.needs_relocation {
+        ensure_desktop_shortcut(exe_dir);
+    }
+    Ok(outcome)
 }
 
 /// Claims the gate in a single attempt.
@@ -243,10 +278,52 @@ fn preflight_checks(exe_dir: &Path, mode: RootMode) -> Result<PreflightOutcome> 
         mode,
         install_root,
         needs_relocation,
+        launcher: false,
         // The real flags are attached by [`run`] after parsing the arguments;
         // this default is only ever observed through the test-only entry points.
         debug: DebugOptions::default(),
     })
+}
+
+/// The desktop shortcut's base name (no `.lnk` extension).
+const INSTALLER_SHORTCUT_NAME: &str = "Zona Installer";
+
+/// The icon shipped in `dependencies\`, reused for the installer shortcut when
+/// present.
+const INSTALLER_ICON_FILE: &str = "icon.ico";
+
+/// Ensures a desktop shortcut to the installer exists when it starts from its
+/// canonical `<drive>:\Zona\installer` home (best effort).
+///
+/// The original copy (e.g. `Downloads\installer`) is deleted after relocation,
+/// so the desktop shortcut is how the user relaunches the installer afterwards.
+/// The shortcut points at the running executable with the `--launcher` argument
+/// (so it opens the launcher window) and reuses the shipped `icon.ico` when
+/// present. Idempotent: every canonical start refreshes the same `.lnk`. A
+/// failure is logged and swallowed — a missing shortcut must never stop an
+/// otherwise-healthy start.
+fn ensure_desktop_shortcut(exe_dir: &Path) {
+    let exe = match std::env::current_exe() {
+        Ok(exe) => exe,
+        Err(error) => {
+            log::warn!(target: "preflight:shortcut", "no running exe path: {error}");
+            return;
+        }
+    };
+    let icon = exe_dir.join("dependencies").join(INSTALLER_ICON_FILE);
+    let icon = icon.is_file().then_some(icon.as_path());
+    let target = ShortcutTarget::new(&exe).with_arguments(LAUNCHER_FLAG);
+    match shortcut::create_shortcut(&target, INSTALLER_SHORTCUT_NAME, icon) {
+        Ok(path) => log::info!(
+            target: "preflight:shortcut",
+            "created desktop shortcut {}",
+            path.display()
+        ),
+        Err(error) => log::warn!(
+            target: "preflight:shortcut",
+            "could not create desktop shortcut: {error}"
+        ),
+    }
 }
 
 /// Whether the binary still has to be relocated to `<drive>:\Zona\installer`.
@@ -502,20 +579,38 @@ pub enum SpawnOutcome {
 /// FIRST action, so [`relocate::spawn_new_copy`] is never reached when relocation
 /// is disabled. Otherwise the program (the relocated
 /// `<...>\Zona\installer\zona-installer.exe`) is shape-validated and the old
-/// folder argument normalized before the spawn command is built.
+/// folder argument normalized before the spawn command is built. `launcher`
+/// forwards `--launcher` to the relocated copy so it re-opens the launcher
+/// window after the hand-off.
 pub fn spawn_relocated_copy(
     mode: &RootMode,
     new_exe: &Path,
     old_dir: &Path,
+    launcher: bool,
 ) -> Result<SpawnOutcome> {
     if mode.relocation_disabled() {
         return Ok(SpawnOutcome::Disabled);
     }
     validate_relocated_exe(new_exe)?;
     let old_dir = normalize_delete_argument(old_dir);
-    let command = relocate::self_delete_command(new_exe, &old_dir);
+    let command = self_delete_command_with(new_exe, &old_dir, launcher);
     relocate::spawn_new_copy(&command)?;
     Ok(SpawnOutcome::Spawned { command })
+}
+
+/// Builds the relocated copy's hand-off command (pure).
+///
+/// `launcher` appends [`LAUNCHER_FLAG`] to the `/delete <old_dir>` arguments.
+fn self_delete_command_with(
+    new_exe: &Path,
+    old_dir: &Path,
+    launcher: bool,
+) -> SelfDeleteCommand {
+    let mut command = relocate::self_delete_command(new_exe, old_dir);
+    if launcher {
+        command.args.push(OsString::from(LAUNCHER_FLAG));
+    }
+    command
 }
 
 /// Ensures `exe` is the relocated installer binary
@@ -944,10 +1039,10 @@ mod tests {
     }
 
     #[test]
-    fn run_self_delete_refuses_a_path_of_the_wrong_shape() {
+    fn run_self_delete_refuses_a_path_whose_last_component_is_not_installer() {
         let _env = DevRootGuard::new();
         let base = unique_temp_dir("selfdel_wrong");
-        let wrong = base.join("not_zona").join("installer");
+        let wrong = base.join("Zona").join("something");
         write(&wrong.join("keep.txt"), "x");
 
         assert!(run_self_delete(&RootMode::Shipped, &wrong).is_err());
@@ -967,7 +1062,7 @@ mod tests {
             .join("installer")
             .join("zona-installer.exe");
 
-        let outcome = spawn_relocated_copy(&mode, &new_exe, &root).expect("guarded");
+        let outcome = spawn_relocated_copy(&mode, &new_exe, &root, false).expect("guarded");
 
         assert_eq!(outcome, SpawnOutcome::Disabled);
         cleanup(&root);
@@ -987,7 +1082,7 @@ mod tests {
             .join("zona-installer.exe");
         assert!(!new_exe.exists(), "temp fixture must be empty");
 
-        let error = spawn_relocated_copy(&RootMode::Shipped, &new_exe, Path::new(r"C:\old"))
+        let error = spawn_relocated_copy(&RootMode::Shipped, &new_exe, Path::new(r"C:\old"), false)
             .expect_err("spawning a missing program must fail");
 
         assert!(matches!(error, AppError::Io { .. }));
@@ -1000,6 +1095,7 @@ mod tests {
             &RootMode::Shipped,
             Path::new(r"C:\Windows\notepad.exe"),
             Path::new(r"C:\old"),
+            false,
         )
         .expect_err("wrong-shape program must be refused");
         assert!(matches!(error, AppError::Io { .. }));
@@ -1047,6 +1143,38 @@ mod tests {
         assert_eq!(
             parse_self_delete_arg(args(&["/delete", r"C:\first", "/delete", r"C:\second"])),
             Some(PathBuf::from(r"C:\first"))
+        );
+    }
+
+    #[test]
+    fn parse_launcher_flag_detects_the_flag() {
+        let args = |list: &[&str]| list.iter().map(OsString::from).collect::<Vec<_>>();
+
+        assert!(parse_launcher_flag(args(&["--launcher"])));
+        assert!(parse_launcher_flag(args(&["--debug", "--launcher"])));
+        assert!(!parse_launcher_flag(args(&["--debug", "--log-debug"])));
+        assert!(!parse_launcher_flag(args(&[])));
+    }
+
+    #[test]
+    fn self_delete_command_with_appends_the_launcher_flag() {
+        let exe = Path::new(r"D:\Zona\installer\zona-installer.exe");
+        let old = Path::new(r"C:\old");
+
+        let without = self_delete_command_with(exe, old, false);
+        assert_eq!(
+            without.args,
+            vec![OsString::from("/delete"), OsString::from(r"C:\old")]
+        );
+
+        let with = self_delete_command_with(exe, old, true);
+        assert_eq!(
+            with.args,
+            vec![
+                OsString::from("/delete"),
+                OsString::from(r"C:\old"),
+                OsString::from("--launcher"),
+            ]
         );
     }
 
@@ -1259,8 +1387,8 @@ mod tests {
         let exe_dir = root.join("Zona").join("installer");
         write(&exe_dir.join("dependencies/aria2c.exe"), "x");
         write(&exe_dir.join("dependencies/7za.exe"), "x");
-        // NOT shaped <anything>\Zona\installer: a permanent refusal, never fatal.
-        let wrong = root.join("not_zona").join("installer");
+        // NOT an `installer`-named dir: a permanent refusal, never fatal.
+        let wrong = root.join("Zona").join("something");
         write(&wrong.join("keep.txt"), "x");
 
         let args = vec![OsString::from("/delete"), wrong.as_os_str().to_os_string()];

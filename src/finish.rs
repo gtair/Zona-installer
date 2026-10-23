@@ -4,14 +4,12 @@
 //! does not depend on the checkbox order:
 //!
 //! 1. **delete downloads** — remove `installer\downloads\` recursively;
-//! 2. **create shortcuts** — two desktop shortcuts targeting
-//!    `<drive>:\Zona\mo2\ModOrganizer.exe`;
-//! 3. **start game** — launch the same executable in `<drive>:\Zona\mo2` with the
+//! 2. **start game** — launch `<drive>:\Zona\mo2\ModOrganizer.exe` with the
 //!    Anomaly profile argument.
 //!
 //! The pure parts (ordering, target path, launch command) are unit-tested; the
 //! impure parts are sealed behind the [`FinishEffects`] seam, with [`RealEffects`]
-//! doing the real Desktop and game-spawn work.
+//! doing the real game-spawn work.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -19,30 +17,16 @@ use std::process::Command;
 use crate::app::FinishActionId;
 use crate::error::{AppError, Result};
 use crate::paths::ResolvedPaths;
-use crate::win32::shortcut::{self, ShortcutTarget};
 
-/// The plain MO2 shortcut's base name.
-const MO2_SHORTCUT_NAME: &str = "Mod Organizer Zona";
-
-/// The game-launching shortcut's base name.
-const LAUNCH_SHORTCUT_NAME: &str = "Launch Zona";
-
-/// The MO2 profile argument the "Launch Zona" shortcut stores, including the
-/// quotes MO2 needs because the profile name contains spaces.
-const MO2_PROFILE_ARGUMENTS: &str = "\"moshortcut://:Anomaly (DX11-AVX)\"";
-
-/// The same profile argument as a single process argument (no surrounding
-/// quotes: `std::process::Command` applies the Windows quoting itself).
+/// The profile argument as a single process argument (no surrounding quotes:
+/// `std::process::Command` applies the Windows quoting itself).
 const MO2_PROFILE_ARGUMENT: &str = "moshortcut://:Anomaly (DX11-AVX)";
 
 /// The game executable's file name inside the `mo2` directory.
-const GAME_EXE_FILE: &str = "ModOrganizer.exe";
-
-/// The shortcut icon shipped beside the tools in `dependencies\`.
-const ICON_FILE: &str = "icon.ico";
+pub(crate) const GAME_EXE_FILE: &str = "ModOrganizer.exe";
 
 /// Runs the enabled finish-screen actions in the fixed order delete downloads ->
-/// create shortcut -> start game.
+/// start game.
 ///
 /// `enabled` carries the checked checkboxes in any order; unchecked actions are
 /// skipped. A missing `downloads` directory is not an error.
@@ -57,7 +41,6 @@ fn run_actions_with(
     effects: &dyn FinishEffects,
 ) -> Result<()> {
     let target = shortcut_target(paths);
-    let icon = shortcut_icon(&paths.deps);
     for action in ordered_actions(enabled) {
         match action {
             FinishActionId::DeleteDownloads => {
@@ -67,17 +50,6 @@ fn run_actions_with(
                     paths.downloads.display(),
                 );
                 delete_downloads(&paths.downloads)?;
-            }
-            FinishActionId::CreateShortcut => {
-                for shortcut in shortcuts(paths) {
-                    log::debug!(
-                        target: "finish:run_actions",
-                        "finish action: create shortcut {} ({})",
-                        shortcut.name,
-                        shortcut.executable.display(),
-                    );
-                    effects.create_shortcut(&shortcut, icon.as_deref())?;
-                }
             }
             FinishActionId::StartGame => {
                 log::debug!(
@@ -99,7 +71,6 @@ fn run_actions_with(
 fn ordered_actions(enabled: &[FinishActionId]) -> Vec<FinishActionId> {
     [
         FinishActionId::DeleteDownloads,
-        FinishActionId::CreateShortcut,
         FinishActionId::StartGame,
     ]
     .into_iter()
@@ -107,65 +78,9 @@ fn ordered_actions(enabled: &[FinishActionId]) -> Vec<FinishActionId> {
     .collect()
 }
 
-/// One desktop shortcut the Create shortcuts action creates.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ShortcutSpec {
-    /// The `.lnk` base name (no extension).
-    name: &'static str,
-    /// The executable the shortcut opens.
-    executable: PathBuf,
-    /// Arguments passed to the executable, stored verbatim (quotes included).
-    arguments: Option<&'static str>,
-    /// The working directory the shortcut starts in.
-    working_directory: PathBuf,
-}
-
-impl ShortcutSpec {
-    /// The [`ShortcutTarget`] this spec describes.
-    fn target(&self) -> ShortcutTarget<'_> {
-        let target =
-            ShortcutTarget::new(&self.executable).with_working_directory(&self.working_directory);
-        match self.arguments {
-            Some(arguments) => target.with_arguments(arguments),
-            None => target,
-        }
-    }
-}
-
-/// The two desktop shortcuts the Create shortcuts action creates:
-///
-/// - `Mod Organizer Zona.lnk` — the plain MO2 launcher;
-/// - `Launch Zona.lnk` — starts in `<Zona>\mo2` and passes the Anomaly profile
-///   argument.
-fn shortcuts(paths: &ResolvedPaths) -> [ShortcutSpec; 2] {
-    let executable = shortcut_target(paths);
-    [
-        ShortcutSpec {
-            name: MO2_SHORTCUT_NAME,
-            executable: executable.clone(),
-            arguments: None,
-            working_directory: paths.mo2.clone(),
-        },
-        ShortcutSpec {
-            name: LAUNCH_SHORTCUT_NAME,
-            executable,
-            arguments: Some(MO2_PROFILE_ARGUMENTS),
-            working_directory: paths.mo2.clone(),
-        },
-    ]
-}
-
-/// The game executable the shortcuts target and the start action launches:
-/// `<Zona>\mo2\ModOrganizer.exe`.
+/// The game executable the start action launches: `<Zona>\mo2\ModOrganizer.exe`.
 fn shortcut_target(paths: &ResolvedPaths) -> PathBuf {
     paths.mo2.join(GAME_EXE_FILE)
-}
-
-/// The desktop shortcuts' icon: `<deps>\icon.ico` when that file was shipped,
-/// else `None` (so the `.lnk` keeps the shell's default icon).
-fn shortcut_icon(deps: &Path) -> Option<PathBuf> {
-    let icon = deps.join(ICON_FILE);
-    icon.is_file().then_some(icon)
 }
 
 /// Removes `downloads` and everything in it; a missing directory is treated as
@@ -182,36 +97,30 @@ fn delete_downloads(downloads: &Path) -> Result<()> {
     }
 }
 
-/// Builds the command that starts the game (pure; nothing is spawned).
+/// Builds the command that starts MO2 (pure; nothing is spawned).
 ///
-/// Mirrors the `Launch Zona` shortcut: MO2 runs in `working_directory`
-/// (`<Zona>\mo2`) with the Anomaly profile argument. The argument is passed
-/// unquoted: `Command` adds the Windows quoting itself.
-fn game_command(exe: &Path, working_directory: &Path) -> Command {
+/// `with_profile` adds the Anomaly profile argument (the "Launch Zona" case);
+/// `false` launches MO2 plain (the "Launch Mod Organizer" case).
+fn mo2_command(exe: &Path, working_directory: &Path, with_profile: bool) -> Command {
     let mut command = Command::new(exe);
     command.current_dir(working_directory);
-    command.arg(MO2_PROFILE_ARGUMENT);
+    if with_profile {
+        command.arg(MO2_PROFILE_ARGUMENT);
+    }
     command
 }
 
 /// The impure side effects the finish flow needs, injected for testing.
 trait FinishEffects {
-    /// Creates one desktop shortcut, returning its path. `icon` is the shipped
-    /// `icon.ico` when present; `None` keeps the default.
-    fn create_shortcut(&self, shortcut: &ShortcutSpec, icon: Option<&Path>) -> Result<PathBuf>;
     /// Launches `exe` with the Anomaly profile argument, starting in
     /// `working_directory`, detached and fire-and-forget.
     fn start_game(&self, exe: &Path, working_directory: &Path) -> Result<()>;
 }
 
-/// Production effects: the desktop-shortcut API plus a detached game spawn.
+/// Production effects: a detached game spawn.
 struct RealEffects;
 
 impl FinishEffects for RealEffects {
-    fn create_shortcut(&self, shortcut: &ShortcutSpec, icon: Option<&Path>) -> Result<PathBuf> {
-        shortcut::create_shortcut(&shortcut.target(), shortcut.name, icon)
-    }
-
     fn start_game(&self, exe: &Path, working_directory: &Path) -> Result<()> {
         start_game_detached(exe, working_directory)
     }
@@ -223,10 +132,24 @@ impl FinishEffects for RealEffects {
 /// NOT placed in a kill-on-close job object (that would terminate the game when
 /// the installer exits). A failed spawn is still fatal.
 fn start_game_detached(exe: &Path, working_directory: &Path) -> Result<()> {
-    let child = game_command(exe, working_directory)
+    launch_mo2(exe, working_directory, true)
+}
+
+/// Launches MO2 detached (the shared seam the finish action and the launcher
+/// screen both use).
+///
+/// `with_profile` adds the Anomaly profile argument. Fire-and-forget: the
+/// returned `Child` is dropped right away and the child is NOT placed in a
+/// kill-on-close job object. A failed spawn is still fatal.
+pub(crate) fn launch_mo2(
+    exe: &Path,
+    working_directory: &Path,
+    with_profile: bool,
+) -> Result<()> {
+    let child = mo2_command(exe, working_directory, with_profile)
         .spawn()
         .map_err(|source| AppError::Io {
-            context: "start the game".to_string(),
+            context: "launch Mod Organizer".to_string(),
             path: Some(exe.to_path_buf()),
             source,
         })?;
@@ -273,33 +196,17 @@ mod tests {
         }
     }
 
-    /// One shortcut a [`FakeEffects::create_shortcut`] call observed.
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct CreatedShortcut {
-        name: String,
-        executable: PathBuf,
-        arguments: Option<String>,
-        working_directory: PathBuf,
-    }
-
-    /// Records the effects a test asked for, in call order, and creates the
-    /// shortcuts in an injected desktop directory (never the real Desktop).
+    /// Records the effects a test asked for, in call order.
     struct FakeEffects {
-        desktop: PathBuf,
         calls: RefCell<Vec<FinishActionId>>,
-        shortcuts: RefCell<Vec<CreatedShortcut>>,
-        shortcut_icon: RefCell<Option<PathBuf>>,
         game_exe: RefCell<Option<PathBuf>>,
         game_cwd: RefCell<Option<PathBuf>>,
     }
 
     impl FakeEffects {
-        fn new(desktop: PathBuf) -> Self {
+        fn new() -> Self {
             FakeEffects {
-                desktop,
                 calls: RefCell::new(Vec::new()),
-                shortcuts: RefCell::new(Vec::new()),
-                shortcut_icon: RefCell::new(None),
                 game_exe: RefCell::new(None),
                 game_cwd: RefCell::new(None),
             }
@@ -307,24 +214,6 @@ mod tests {
     }
 
     impl FinishEffects for FakeEffects {
-        fn create_shortcut(&self, shortcut: &ShortcutSpec, icon: Option<&Path>) -> Result<PathBuf> {
-            self.calls.borrow_mut().push(FinishActionId::CreateShortcut);
-            self.shortcuts.borrow_mut().push(CreatedShortcut {
-                name: shortcut.name.to_string(),
-                executable: shortcut.executable.clone(),
-                arguments: shortcut.arguments.map(str::to_string),
-                working_directory: shortcut.working_directory.clone(),
-            });
-            *self.shortcut_icon.borrow_mut() = icon.map(Path::to_path_buf);
-            let link = self.desktop.join(format!("{}.lnk", shortcut.name));
-            std::fs::write(&link, b"stub shortcut").map_err(|source| AppError::Io {
-                context: "write stub shortcut".to_string(),
-                path: Some(link.clone()),
-                source,
-            })?;
-            Ok(link)
-        }
-
         fn start_game(&self, exe: &Path, working_directory: &Path) -> Result<()> {
             self.calls.borrow_mut().push(FinishActionId::StartGame);
             *self.game_exe.borrow_mut() = Some(exe.to_path_buf());
@@ -373,89 +262,16 @@ mod tests {
     }
 
     #[test]
-    fn shortcuts_are_the_plain_mo2_launcher_and_the_profile_launcher() {
-        let root = unique_temp_dir("specs");
-        let paths = paths_under(&root);
-
-        let specs = shortcuts(&paths);
-
-        assert_eq!(specs.len(), 2, "Create shortcuts creates two shortcuts");
-
-        // 1. The plain MO2 launcher.
-        assert_eq!(specs[0].name, "Mod Organizer Zona");
-        assert_eq!(specs[0].executable, paths.mo2.join("ModOrganizer.exe"));
-        assert_eq!(specs[0].arguments, None);
-        assert_eq!(specs[0].working_directory, paths.mo2);
-
-        // 2. The Anomaly profile launcher: same exe, cwd `<Zona>\mo2`, and the
-        // quoted moshortcut argument.
-        assert_eq!(specs[1].name, "Launch Zona");
-        assert_eq!(specs[1].executable, paths.mo2.join("ModOrganizer.exe"));
-        assert_eq!(
-            specs[1].arguments,
-            Some("\"moshortcut://:Anomaly (DX11-AVX)\"")
-        );
-        assert_eq!(specs[1].working_directory, paths.mo2);
-
-        std::fs::remove_dir_all(&root).expect("cleanup temp dir");
-    }
-
-    #[test]
-    fn shortcut_icon_is_the_shipped_icon_only_when_it_exists() {
-        let root = unique_temp_dir("icon");
-        let deps = root.join("dependencies");
-        std::fs::create_dir_all(&deps).expect("create dependencies");
-
-        // Absent (a checkout without the binary asset): no icon, so `IShellLink`
-        // keeps the shell default.
-        assert_eq!(shortcut_icon(&deps), None);
-
-        let icon = deps.join(ICON_FILE);
-        std::fs::write(&icon, b"icon bytes").expect("write icon");
-        assert_eq!(shortcut_icon(&deps), Some(icon));
-
-        std::fs::remove_dir_all(&root).expect("cleanup temp dir");
-    }
-
-    #[test]
-    fn run_actions_hands_the_shipped_icon_to_the_shortcut() {
-        let root = unique_temp_dir("icon_run");
-        let paths = paths_under(&root);
-        std::fs::create_dir_all(&paths.deps).expect("create dependencies");
-        let icon = paths.deps.join(ICON_FILE);
-        std::fs::write(&icon, b"icon bytes").expect("write icon");
-
-        let desktop = unique_temp_dir("icon_desktop");
-        let effects = FakeEffects::new(desktop.clone());
-
-        run_actions_with(&paths, &[FinishActionId::CreateShortcut], &effects).expect("run actions");
-
-        assert_eq!(
-            effects.shortcut_icon.borrow().as_deref(),
-            Some(icon.as_path()),
-            "the shipped dependencies\\icon.ico must reach the shortcut"
-        );
-
-        std::fs::remove_dir_all(&desktop).expect("cleanup desktop");
-        std::fs::remove_dir_all(&root).expect("cleanup temp dir");
-    }
-
-    #[test]
     fn ordered_actions_fix_the_order_regardless_of_checkbox_order() {
         // Deliberately scrambled, with a duplicate: the canonical order wins.
         let enabled = [
             FinishActionId::StartGame,
             FinishActionId::DeleteDownloads,
-            FinishActionId::CreateShortcut,
             FinishActionId::StartGame,
         ];
         assert_eq!(
             ordered_actions(&enabled),
-            vec![
-                FinishActionId::DeleteDownloads,
-                FinishActionId::CreateShortcut,
-                FinishActionId::StartGame,
-            ]
+            vec![FinishActionId::DeleteDownloads, FinishActionId::StartGame]
         );
 
         // Only the checked actions run.
@@ -467,86 +283,44 @@ mod tests {
     }
 
     #[test]
-    fn run_actions_creates_both_shortcuts_in_the_injected_desktop_and_follows_order() {
+    fn run_actions_deletes_downloads_then_starts_the_game() {
         let root = unique_temp_dir("run");
         let mut paths = paths_under(&root);
         let downloads = paths.downloads.clone();
         std::fs::create_dir_all(&downloads).expect("create downloads");
         std::fs::write(downloads.join("a.7z"), b"bytes").expect("write file");
 
-        let desktop = unique_temp_dir("desktop");
         let expected_target = PathBuf::from(r"C:\Zona\mo2\ModOrganizer.exe");
         // Use the canonical `<Zona>\mo2` shape for the target assertion.
         paths.mo2 = PathBuf::from(r"C:\Zona\mo2");
-        let effects = FakeEffects::new(desktop.clone());
+        let effects = FakeEffects::new();
 
         run_actions_with(
             &paths,
             &[
                 FinishActionId::StartGame,
-                FinishActionId::CreateShortcut,
                 FinishActionId::DeleteDownloads,
             ],
             &effects,
         )
         .expect("run actions");
 
-        // Order is fixed: delete first (dir gone), then the shortcuts, then game.
+        // Order is fixed: delete first (dir gone), then the game.
         assert!(!downloads.exists(), "downloads must be deleted first");
-
-        // Both shortcuts were created in the injected desktop dir, targeting the
-        // MO2 executable.
-        for name in ["Mod Organizer Zona", "Launch Zona"] {
-            let link = desktop.join(format!("{name}.lnk"));
-            assert!(
-                link.exists(),
-                "{name}.lnk must exist in the injected desktop"
-            );
-        }
-
-        let created = effects.shortcuts.borrow().clone();
-        assert_eq!(
-            created,
-            vec![
-                CreatedShortcut {
-                    name: "Mod Organizer Zona".to_string(),
-                    executable: expected_target.clone(),
-                    arguments: None,
-                    working_directory: PathBuf::from(r"C:\Zona\mo2"),
-                },
-                CreatedShortcut {
-                    name: "Launch Zona".to_string(),
-                    executable: expected_target.clone(),
-                    arguments: Some("\"moshortcut://:Anomaly (DX11-AVX)\"".to_string()),
-                    working_directory: PathBuf::from(r"C:\Zona\mo2"),
-                },
-            ]
-        );
         assert_eq!(
             effects.game_exe.borrow().as_deref(),
             Some(expected_target.as_path()),
-            "start game must launch the same path as the shortcuts"
+            "start game must launch the MO2 executable"
         );
         assert_eq!(
             effects.game_cwd.borrow().as_deref(),
             Some(Path::new(r"C:\Zona\mo2")),
-            "start game must run in <Zona>\\mo2 like the Launch Zona shortcut"
+            "start game must run in <Zona>\\mo2"
         );
-        assert_eq!(
-            *effects.calls.borrow(),
-            vec![
-                FinishActionId::CreateShortcut,
-                FinishActionId::CreateShortcut,
-                FinishActionId::StartGame,
-            ]
-        );
-        assert_eq!(
-            effects.shortcut_icon.borrow().as_deref(),
-            None,
-            "nothing shipped under dependencies\\: the shortcuts keep the default icon"
-        );
+        // Delete downloads runs directly (not via the effects seam); the only
+        // recorded effect is the game spawn.
+        assert_eq!(*effects.calls.borrow(), vec![FinishActionId::StartGame]);
 
-        std::fs::remove_dir_all(&desktop).expect("cleanup desktop");
         std::fs::remove_dir_all(&root).expect("cleanup temp dir");
     }
 
@@ -557,29 +331,27 @@ mod tests {
         let downloads = paths.downloads.clone();
         std::fs::create_dir_all(&downloads).expect("create downloads");
 
-        let desktop = unique_temp_dir("empty_desktop");
-        let effects = FakeEffects::new(desktop.clone());
+        let effects = FakeEffects::new();
 
         run_actions_with(&paths, &[], &effects).expect("no actions");
 
         assert!(downloads.exists(), "nothing enabled: downloads kept");
         assert!(effects.calls.borrow().is_empty());
 
-        std::fs::remove_dir_all(&desktop).expect("cleanup desktop");
         std::fs::remove_dir_all(&root).expect("cleanup temp dir");
     }
 
     #[test]
-    fn game_command_starts_mo2_in_the_mo2_dir_with_the_anomaly_profile() {
+    fn mo2_command_with_profile_adds_the_anomaly_argument() {
         let exe = PathBuf::from(r"C:\Zona\mo2\ModOrganizer.exe");
         let cwd = PathBuf::from(r"C:\Zona\mo2");
-        let cmd = game_command(&exe, &cwd);
+        let cmd = mo2_command(&exe, &cwd, true);
 
         assert_eq!(cmd.get_program(), exe.as_os_str());
         assert_eq!(
             cmd.get_current_dir(),
             Some(cwd.as_path()),
-            "the game must start in <Zona>\\mo2 (same as the Launch Zona shortcut)"
+            "the game must start in <Zona>\\mo2"
         );
         assert_eq!(
             cmd.get_args().collect::<Vec<_>>(),
@@ -589,11 +361,16 @@ mod tests {
     }
 
     #[test]
-    fn shortcut_arguments_are_the_quoted_form_of_the_game_argument() {
-        // The .lnk stores a raw command line (quotes included), the spawn passes
-        // one argument; both must describe the same profile or the two launch
-        // paths would diverge.
-        assert_eq!(MO2_PROFILE_ARGUMENTS, format!("\"{MO2_PROFILE_ARGUMENT}\""));
+    fn mo2_command_without_profile_adds_no_argument() {
+        let exe = PathBuf::from(r"C:\Zona\mo2\ModOrganizer.exe");
+        let cwd = PathBuf::from(r"C:\Zona\mo2");
+        let cmd = mo2_command(&exe, &cwd, false);
+
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            Vec::<&std::ffi::OsStr>::new()
+        );
+        assert_eq!(cmd.get_current_dir(), Some(cwd.as_path()));
     }
 
     #[test]
@@ -601,8 +378,7 @@ mod tests {
         // A real, harmless read-only Windows program that exits NON-ZERO when
         // handed the moshortcut argument. Fire-and-forget must still return Ok:
         // the exit code is not acted on. Never the real game. The mo2 command
-        // shape is covered by
-        // `game_command_starts_mo2_in_the_mo2_dir_with_the_anomaly_profile`.
+        // shape is covered by `mo2_command_with_profile_adds_the_anomaly_argument`.
         let exe = system32_exe("whoami.exe");
         let cwd = exe.parent().expect("System32 dir").to_path_buf();
 

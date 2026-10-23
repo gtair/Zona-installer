@@ -165,10 +165,9 @@ pub fn delete_old_folder(old_dir: &Path) -> Result<()> {
 /// drive-letter path (a `Component::Prefix` of `Prefix::Disk`, so UNC,
 /// verbatim and device forms are refused), contains no `..`
 /// (`Component::ParentDir`) component, is absolute, is shaped
-/// `<anything>\Zona\installer` (final component `installer` under a parent
-/// component `Zona`, case-insensitive), is not the running executable's own
-/// directory, and is not under the debug root override. No filesystem call is
-/// made here.
+/// `<anything>\installer` (final component `installer`, case-insensitive), is
+/// not the running executable's own directory, and is not under the debug root
+/// override. No filesystem call is made here.
 fn validate_old_folder(
     old_dir: &Path,
     exe_dir: Option<&Path>,
@@ -196,15 +195,10 @@ fn validate_old_folder(
         .file_name()
         .map(|name| os_str_eq_ignore_ascii_case(name, OsStr::new("installer")))
         .unwrap_or(false);
-    let parent_is_zona = old_dir
-        .parent()
-        .and_then(Path::file_name)
-        .map(|name| os_str_eq_ignore_ascii_case(name, OsStr::new("Zona")))
-        .unwrap_or(false);
-    if !is_installer || !parent_is_zona {
+    if !is_installer {
         return Err(refusal_error(
             old_dir,
-            "refusing to delete a path not shaped <anything>\\Zona\\installer",
+            "refusing to delete a path not shaped <anything>\\installer",
         ));
     }
     if let Some(exe) = exe_dir {
@@ -714,18 +708,19 @@ mod tests {
     }
 
     #[test]
-    fn delete_old_folder_refuses_a_temp_dir_not_shaped_zona_installer_and_deletes_nothing() {
+    fn delete_old_folder_accepts_any_installer_named_dir_and_refuses_other_names() {
         let _guard = DevRootGuard::new();
-        let base = unique_temp_dir("wrongshape");
+        let base = unique_temp_dir("shape");
 
-        let wrong_parent = base.join("not_zona").join("installer");
-        let marker = wrong_parent.join("keep.txt");
+        // Any directory whose last component is `installer` is deleted, whatever
+        // its parent: a `Downloads\installer` copy is cleaned up after relocation.
+        let downloads_copy = base.join("Downloads").join("installer");
+        let marker = downloads_copy.join("keep.txt");
         write(&marker, "x");
-        assert!(delete_old_folder(&wrong_parent).is_err());
-        // Nothing was deleted: the directory and its file are still there.
-        assert!(wrong_parent.exists());
-        assert!(marker.exists());
+        delete_old_folder(&downloads_copy).expect("delete a Downloads copy");
+        assert!(!downloads_copy.exists());
 
+        // A directory whose last component is not `installer` is still refused.
         let wrong_child = base.join("Zona").join("something");
         let marker = wrong_child.join("keep.txt");
         write(&marker, "x");
@@ -733,7 +728,7 @@ mod tests {
         assert!(wrong_child.exists());
         assert!(marker.exists());
 
-        std::fs::remove_dir_all(&base).expect("cleanup wrongshape");
+        std::fs::remove_dir_all(&base).expect("cleanup shape");
     }
 
     #[test]

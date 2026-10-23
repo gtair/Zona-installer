@@ -49,9 +49,6 @@ use crate::win32::taskbar;
 pub enum FinishActionId {
     /// Delete `installer\downloads\` recursively.
     DeleteDownloads,
-    /// Create the `Mod Organizer Zona.lnk` and `Launch Zona.lnk` desktop
-    /// shortcuts.
-    CreateShortcut,
     /// Start the game.
     StartGame,
 }
@@ -105,6 +102,13 @@ pub enum Phase {
     RelocationTargetExists {
         /// The chosen drive whose `Zona` directory already exists.
         drive: String,
+    },
+    /// The launcher window (three options: installer / MO2 / game), shown when
+    /// the installer starts from its canonical home with `--launcher`.
+    Launcher {
+        /// Whether `..\mo2\ModOrganizer.exe` exists, i.e. the game is installed.
+        /// The MO2/Zona options are disabled when false.
+        game_present: bool,
     },
     /// The choice tree is shown (Screen 1).
     Choices,
@@ -291,6 +295,12 @@ pub enum Event {
         /// `true` deletes the existing `Zona` directory, `false` cancels.
         delete: bool,
     },
+    /// The user chose to proceed into the installer from the launcher.
+    LaunchInstaller,
+    /// The user chose to launch Mod Organizer (no profile) from the launcher.
+    LaunchMo2,
+    /// The user chose to launch the game (Anomaly profile) from the launcher.
+    LaunchZona,
     /// A finish-screen checkbox was toggled (Screen 4).
     FinishAction {
         /// Which action.
@@ -319,9 +329,9 @@ pub(crate) struct Host {
     /// Performs the relocation move (does not delete an existing target).
     pub(crate) relocate: fn(&Path, &Path) -> Result<RelocateOutcome>,
     /// Spawns the relocated copy with `/delete <old_dir>` so it can remove the
-    /// old folder and carry the run on. Returns [`SpawnOutcome::Disabled`] under
-    /// the dev override.
-    pub(crate) spawn_relocated_copy: fn(&RootMode, &Path, &Path) -> Result<SpawnOutcome>,
+    /// old folder and carry the run on. The bool forwards `--launcher`. Returns
+    /// [`SpawnOutcome::Disabled`] under the dev override.
+    pub(crate) spawn_relocated_copy: fn(&RootMode, &Path, &Path, bool) -> Result<SpawnOutcome>,
     /// Starts the download worker.
     pub(crate) start_download: fn(&mut App) -> Result<()>,
     /// Starts the install worker.
@@ -330,6 +340,9 @@ pub(crate) struct Host {
     pub(crate) restart_install: fn(&mut App) -> Result<()>,
     /// Runs the enabled finish-screen actions.
     pub(crate) run_finish_actions: fn(&App) -> Result<()>,
+    /// Launches MO2 detached; the bool adds the Anomaly profile argument (the
+    /// launcher's "Launch MO2" / "Launch Zona").
+    pub(crate) launch_mo2: fn(&Path, &Path, bool) -> Result<()>,
     /// Requests a taskbar flash because the installer now needs user input.
     pub(crate) flash_taskbar: fn() -> Result<()>,
 }
@@ -347,6 +360,7 @@ impl Host {
             start_install: run::start_install,
             restart_install: restart::restart_install,
             run_finish_actions: production_finish_actions,
+            launch_mo2: finish::launch_mo2,
             flash_taskbar: taskbar::flash_own_window,
         }
     }
@@ -363,6 +377,9 @@ pub struct App {
     /// [`Host::spawn_relocated_copy`]. It decides whether the spawn is disabled
     /// (dev override).
     mode: RootMode,
+    /// Whether the run was launched with `--launcher`, so a relocation hand-off
+    /// can forward it to the relocated copy.
+    launcher: bool,
     /// The last drive list, kept so cancel/re-pick needs no Win32 call.
     drives: Vec<String>,
     progress_rx: Option<Receiver<ProgressEvent>>,
@@ -393,6 +410,8 @@ pub struct App {
     /// Set ONLY on [`SpawnOutcome::Spawned`]: the old process then asks to close
     /// ([`App::should_close`]) so the relocated copy owns the run.
     hand_off_done: bool,
+    /// Whether the launcher launched MO2/the game; the installer then closes.
+    launcher_done: bool,
 }
 
 impl App {
@@ -414,6 +433,7 @@ impl App {
     pub(crate) fn bootstrap(outcome: PreflightOutcome, host: Host) -> Result<App> {
         let install_root = outcome.install_root.clone();
         let mode = outcome.mode.clone();
+        let launcher = outcome.launcher;
         let mut app = App {
             view: ViewModel::empty(),
             host,
@@ -421,6 +441,7 @@ impl App {
             selected: HashSet::new(),
             install_root,
             mode,
+            launcher,
             drives: Vec::new(),
             progress_rx: None,
             wake: None,
@@ -429,6 +450,7 @@ impl App {
             verify_tx: None,
             finish_done: false,
             hand_off_done: false,
+            launcher_done: false,
         };
         if outcome.needs_relocation {
             let drives = (app.host.drives)()?;
@@ -441,6 +463,8 @@ impl App {
             }
             app.drives = drives.clone();
             app.view.phase = Phase::Relocation { drives };
+        } else if launcher {
+            app.enter_launcher();
         } else {
             app.enter_choices()?;
         }
@@ -455,10 +479,11 @@ impl App {
     /// Whether the installer should close its viewport.
     ///
     /// Becomes `true` once [`Event::Finish`] has run the finish actions
-    /// successfully, or once a successful relocation hand-off has spawned the
-    /// relocated copy; `main.rs` then sends `egui::ViewportCommand::Close`.
+    /// successfully, once a successful relocation hand-off has spawned the
+    /// relocated copy, or once the launcher launched MO2/the game; `main.rs`
+    /// then sends `egui::ViewportCommand::Close`.
     pub fn should_close(&self) -> bool {
-        self.finish_done || self.hand_off_done
+        self.finish_done || self.hand_off_done || self.launcher_done
     }
 
     /// Handles one GUI event.
@@ -588,6 +613,9 @@ impl App {
             Event::Continue => self.acknowledge_verify(),
             Event::DriveChosen { drive } => self.choose_drive(&drive),
             Event::RelocateTarget { delete } => self.resolve_target(delete),
+            Event::LaunchInstaller => self.enter_choices(),
+            Event::LaunchMo2 => self.launch_mo2(false),
+            Event::LaunchZona => self.launch_mo2(true),
             Event::FinishAction { action, on } => {
                 self.set_finish_action(action, on);
                 Ok(())
@@ -636,6 +664,24 @@ impl App {
         self.config = Some(config);
         self.view.phase = Phase::Choices;
         Ok(())
+    }
+
+    /// Enters the launcher window, resolving whether the game is installed.
+    ///
+    /// Reached only from a canonical install (`needs_relocation == false`) with
+    /// `--launcher`. `game_present` is the filesystem answer to "does
+    /// `..\mo2\ModOrganizer.exe` exist?"; the two launch options are disabled
+    /// when it is false.
+    fn enter_launcher(&mut self) {
+        let paths = paths::resolved_paths(&self.install_root);
+        let game_exe = paths.mo2.join(finish::GAME_EXE_FILE);
+        let game_present = game_exe.is_file();
+        log::info!(
+            target: "app:enter_launcher",
+            "launcher shown; game present: {game_present} ({})",
+            game_exe.display(),
+        );
+        self.view.phase = Phase::Launcher { game_present };
     }
 
     /// `ChoiceToggled`: cascading pick-to-set update.
@@ -816,7 +862,7 @@ impl App {
                 self.install_root = install_root;
                 let mode = self.mode.clone();
                 let spawn = self.host.spawn_relocated_copy;
-                match spawn(&mode, &new_exe, &old_dir)? {
+                match spawn(&mode, &new_exe, &old_dir, self.launcher)? {
                     SpawnOutcome::Spawned { .. } => {
                         // The old process stays on the drive picker while it
                         // exits (it never reaches Choices; the relocated copy owns
@@ -865,6 +911,26 @@ impl App {
         let relocate = self.host.relocate;
         let outcome = relocate(&self.install_root, Path::new(&drive))?;
         self.apply_relocate_outcome(&drive, outcome)
+    }
+
+    /// `LaunchMo2` / `LaunchZona`: spawns MO2 detached (with the Anomaly profile
+    /// argument when `with_profile`) and asks to close. Only meaningful from the
+    /// launcher while the game is installed.
+    fn launch_mo2(&mut self, with_profile: bool) -> Result<()> {
+        if !matches!(&self.view.phase, Phase::Launcher { game_present: true }) {
+            return Ok(());
+        }
+        let paths = paths::resolved_paths(&self.install_root);
+        let exe = paths.mo2.join(finish::GAME_EXE_FILE);
+        let launch = self.host.launch_mo2;
+        launch(&exe, &paths.mo2, with_profile)?;
+        log::info!(
+            target: "app:launch_mo2",
+            "launcher launched MO2 (profile: {with_profile}) {}",
+            exe.display(),
+        );
+        self.launcher_done = true;
+        Ok(())
     }
 
     /// `FinishAction`: records a finish-screen checkbox (Screen 4).
@@ -1070,10 +1136,6 @@ impl App {
         self.view.finish_actions = vec![
             FinishAction {
                 action: FinishActionId::DeleteDownloads,
-                enabled: false,
-            },
-            FinishAction {
-                action: FinishActionId::CreateShortcut,
                 enabled: false,
             },
             FinishAction {
@@ -1372,6 +1434,18 @@ mod tests {
             mode: RootMode::Shipped,
             install_root,
             needs_relocation,
+            launcher: false,
+            debug: preflight::DebugOptions::default(),
+        }
+    }
+
+    /// A `PreflightOutcome` launched with `--launcher`.
+    fn launcher_outcome(needs_relocation: bool, install_root: PathBuf) -> PreflightOutcome {
+        PreflightOutcome {
+            mode: RootMode::Shipped,
+            install_root,
+            needs_relocation,
+            launcher: true,
             debug: preflight::DebugOptions::default(),
         }
     }
@@ -1511,6 +1585,7 @@ mod tests {
     /// pointer cannot capture, so the observations go in a static.
     static SPAWN_CALLS: AtomicUsize = AtomicUsize::new(0);
     static SPAWN_ARGS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
+    static SPAWN_LAUNCHER: Mutex<Vec<bool>> = Mutex::new(Vec::new());
     /// Serializes the recording-spawn tests (the observations are process-global
     /// statics, and tests run on parallel threads).
     static SPAWN_LOCK: Mutex<()> = Mutex::new(());
@@ -1542,12 +1617,21 @@ mod tests {
         })
     }
 
-    fn record_spawn_ok(_mode: &RootMode, new_exe: &Path, old_dir: &Path) -> Result<SpawnOutcome> {
+    fn record_spawn_ok(
+        _mode: &RootMode,
+        new_exe: &Path,
+        old_dir: &Path,
+        launcher: bool,
+    ) -> Result<SpawnOutcome> {
         SPAWN_CALLS.fetch_add(1, Ordering::SeqCst);
         SPAWN_ARGS
             .lock()
             .expect("spawn args lock")
             .push((new_exe.to_path_buf(), old_dir.to_path_buf()));
+        SPAWN_LAUNCHER
+            .lock()
+            .expect("spawn launcher lock")
+            .push(launcher);
         Ok(SpawnOutcome::Spawned {
             command: relocate::self_delete_command(new_exe, old_dir),
         })
@@ -1555,17 +1639,54 @@ mod tests {
 
     /// A hand-off seam that never spawns (the dev-override shape): the old
     /// process keeps the run and enters `Choices`.
-    fn spawn_disabled(_mode: &RootMode, _new_exe: &Path, _old_dir: &Path) -> Result<SpawnOutcome> {
+    fn spawn_disabled(
+        _mode: &RootMode,
+        _new_exe: &Path,
+        _old_dir: &Path,
+        _launcher: bool,
+    ) -> Result<SpawnOutcome> {
         Ok(SpawnOutcome::Disabled)
     }
 
     /// A hand-off seam that fails: a failed spawn must be fatal and must NOT
     /// close the old process.
-    fn spawn_fails(_mode: &RootMode, _new_exe: &Path, _old_dir: &Path) -> Result<SpawnOutcome> {
+    fn spawn_fails(
+        _mode: &RootMode,
+        _new_exe: &Path,
+        _old_dir: &Path,
+        _launcher: bool,
+    ) -> Result<SpawnOutcome> {
         Err(AppError::Io {
             context: "spawn relocated installer".to_string(),
             path: None,
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "boom"),
+        })
+    }
+
+    /// Counts launcher MO2 spawns and records the (exe, cwd, with_profile) args.
+    static LAUNCH_CALLS: AtomicUsize = AtomicUsize::new(0);
+    static LAUNCH_ARGS: Mutex<Vec<(PathBuf, PathBuf, bool)>> = Mutex::new(Vec::new());
+    /// Serializes the recording-launch tests.
+    static LAUNCH_LOCK: Mutex<()> = Mutex::new(());
+
+    fn ok_launch(_exe: &Path, _cwd: &Path, _with_profile: bool) -> Result<()> {
+        Ok(())
+    }
+
+    fn record_launch(exe: &Path, cwd: &Path, with_profile: bool) -> Result<()> {
+        LAUNCH_CALLS.fetch_add(1, Ordering::SeqCst);
+        LAUNCH_ARGS
+            .lock()
+            .expect("launch args lock")
+            .push((exe.to_path_buf(), cwd.to_path_buf(), with_profile));
+        Ok(())
+    }
+
+    fn fail_launch(_exe: &Path, _cwd: &Path, _with_profile: bool) -> Result<()> {
+        Err(AppError::Fatal {
+            message: "launch boom".to_string(),
+            error_id: ErrorId::new("E_TEST_LAUNCH"),
+            log_path: None,
         })
     }
 
@@ -1579,6 +1700,7 @@ mod tests {
             start_install: ok_install,
             restart_install: record_restart,
             run_finish_actions: ok_finish,
+            launch_mo2: ok_launch,
             flash_taskbar: noop_flash,
         }
     }
@@ -1789,7 +1911,7 @@ mod tests {
         .expect("send done");
         app.drain_progress();
         assert_eq!(app.view_model().phase, Phase::Finished);
-        assert_eq!(app.view_model().finish_actions.len(), 3);
+        assert_eq!(app.view_model().finish_actions.len(), 2);
 
         app.handle(Event::FinishAction {
             action: FinishActionId::DeleteDownloads,
@@ -1809,15 +1931,11 @@ mod tests {
         cleanup(&root);
     }
 
-    /// The three finish actions, all unchecked (Screen 4 defaults).
+    /// The two finish actions, all unchecked (Screen 4 defaults).
     fn unset_finish_actions() -> Vec<FinishAction> {
         vec![
             FinishAction {
                 action: FinishActionId::DeleteDownloads,
-                enabled: false,
-            },
-            FinishAction {
-                action: FinishActionId::CreateShortcut,
                 enabled: false,
             },
             FinishAction {
@@ -1976,10 +2094,6 @@ mod tests {
             FinishAction {
                 action: FinishActionId::DeleteDownloads,
                 enabled: true,
-            },
-            FinishAction {
-                action: FinishActionId::CreateShortcut,
-                enabled: false,
             },
             FinishAction {
                 action: FinishActionId::StartGame,
@@ -2367,6 +2481,188 @@ mod tests {
         );
         assert!(!app.should_close(), "a failed spawn must NOT close");
 
+        cleanup(&base);
+    }
+
+    // ---- launcher ---------------------------------------------------------
+
+    /// A canonical start with `--launcher` (no relocation needed) opens the
+    /// launcher window; without a `mo2` install the game is reported absent.
+    #[test]
+    fn launcher_opens_without_the_game_present() {
+        let root = unique_temp_dir("launcher_absent");
+        let app =
+            App::bootstrap(launcher_outcome(false, root.clone()), test_host()).expect("bootstrap");
+        assert_eq!(
+            app.view_model().phase,
+            Phase::Launcher { game_present: false }
+        );
+        cleanup(&root);
+    }
+
+    /// When `..\mo2\ModOrganizer.exe` exists the launcher reports the game
+    /// present.
+    #[test]
+    fn launcher_reports_the_game_present() {
+        let base = unique_temp_dir("launcher_present");
+        let install_root = base.join("Zona").join("installer");
+        let mo2 = base.join("Zona").join("mo2");
+        std::fs::create_dir_all(&mo2).expect("create mo2");
+        std::fs::write(mo2.join("ModOrganizer.exe"), b"stub").expect("write exe");
+
+        let app = App::bootstrap(launcher_outcome(false, install_root), test_host())
+            .expect("bootstrap");
+        assert_eq!(
+            app.view_model().phase,
+            Phase::Launcher { game_present: true }
+        );
+        cleanup(&base);
+    }
+
+    /// `LaunchInstaller` proceeds into the normal installer interface.
+    #[test]
+    fn launcher_launch_installer_enters_choices() {
+        let root = unique_temp_dir("launcher_installer");
+        let mut app =
+            App::bootstrap(launcher_outcome(false, root.clone()), test_host()).expect("bootstrap");
+        app.handle(Event::LaunchInstaller).expect("launch installer");
+        assert_eq!(app.view_model().phase, Phase::Choices);
+        cleanup(&root);
+    }
+
+    /// `LaunchMo2` spawns MO2 without the profile argument and asks to close.
+    #[test]
+    fn launcher_launch_mo2_spawns_and_closes() {
+        let _guard = LAUNCH_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        LAUNCH_CALLS.store(0, Ordering::SeqCst);
+        LAUNCH_ARGS.lock().expect("launch args lock").clear();
+
+        let base = unique_temp_dir("launcher_mo2");
+        let install_root = base.join("Zona").join("installer");
+        let mo2 = base.join("Zona").join("mo2");
+        std::fs::create_dir_all(&mo2).expect("create mo2");
+        std::fs::write(mo2.join("ModOrganizer.exe"), b"stub").expect("write exe");
+
+        let mut host = test_host();
+        host.launch_mo2 = record_launch;
+        let mut app =
+            App::bootstrap(launcher_outcome(false, install_root), host).expect("bootstrap");
+
+        app.handle(Event::LaunchMo2).expect("launch mo2");
+        assert_eq!(LAUNCH_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            LAUNCH_ARGS.lock().expect("launch args lock").clone(),
+            vec![(mo2.join("ModOrganizer.exe"), mo2.clone(), false)],
+            "LaunchMo2 spawns MO2 without the profile argument"
+        );
+        assert!(app.should_close(), "launching MO2 closes the installer");
+
+        // The close guard stops further input: a follow-up launch is ignored.
+        app.handle(Event::LaunchZona).expect("guarded");
+        assert_eq!(LAUNCH_CALLS.load(Ordering::SeqCst), 1);
+        cleanup(&base);
+    }
+
+    /// `LaunchZona` spawns MO2 with the Anomaly profile argument.
+    #[test]
+    fn launcher_launch_zona_passes_the_profile_argument() {
+        let _guard = LAUNCH_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        LAUNCH_CALLS.store(0, Ordering::SeqCst);
+        LAUNCH_ARGS.lock().expect("launch args lock").clear();
+
+        let base = unique_temp_dir("launcher_zona");
+        let install_root = base.join("Zona").join("installer");
+        let mo2 = base.join("Zona").join("mo2");
+        std::fs::create_dir_all(&mo2).expect("create mo2");
+        std::fs::write(mo2.join("ModOrganizer.exe"), b"stub").expect("write exe");
+
+        let mut host = test_host();
+        host.launch_mo2 = record_launch;
+        let mut app =
+            App::bootstrap(launcher_outcome(false, install_root), host).expect("bootstrap");
+
+        app.handle(Event::LaunchZona).expect("launch zona");
+        assert_eq!(
+            LAUNCH_ARGS.lock().expect("launch args lock").clone(),
+            vec![(mo2.join("ModOrganizer.exe"), mo2.clone(), true)],
+            "LaunchZona spawns MO2 WITH the profile argument"
+        );
+        assert!(app.should_close());
+        cleanup(&base);
+    }
+
+    /// When the game is absent, the two launch options are no-ops (the UI greys
+    /// them out; the core enforces it too).
+    #[test]
+    fn launcher_launch_is_a_noop_when_the_game_is_absent() {
+        let _guard = LAUNCH_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        LAUNCH_CALLS.store(0, Ordering::SeqCst);
+
+        let root = unique_temp_dir("launcher_noop");
+        let mut host = test_host();
+        host.launch_mo2 = record_launch;
+        let mut app =
+            App::bootstrap(launcher_outcome(false, root.clone()), host).expect("bootstrap");
+
+        app.handle(Event::LaunchMo2).expect("guarded noop");
+        app.handle(Event::LaunchZona).expect("guarded noop");
+        assert_eq!(LAUNCH_CALLS.load(Ordering::SeqCst), 0);
+        assert!(!app.should_close(), "a no-op launch must not close");
+        cleanup(&root);
+    }
+
+    /// A failed MO2 launch is fatal and does not close.
+    #[test]
+    fn launcher_launch_failure_is_fatal() {
+        let base = unique_temp_dir("launcher_fail");
+        let install_root = base.join("Zona").join("installer");
+        let mo2 = base.join("Zona").join("mo2");
+        std::fs::create_dir_all(&mo2).expect("create mo2");
+        std::fs::write(mo2.join("ModOrganizer.exe"), b"stub").expect("write exe");
+
+        let mut host = test_host();
+        host.launch_mo2 = fail_launch;
+        let mut app =
+            App::bootstrap(launcher_outcome(false, install_root), host).expect("bootstrap");
+
+        let error = app.handle(Event::LaunchMo2).expect_err("a failed launch must surface");
+        assert_eq!(error.error_id().as_str(), "E_TEST_LAUNCH");
+        assert!(matches!(app.view_model().phase, Phase::Fatal(_)));
+        assert!(!app.should_close(), "a failed launch must not close");
+        cleanup(&base);
+    }
+
+    /// A `--launcher` start that still needs relocation forwards the flag to the
+    /// relocated copy through the hand-off.
+    #[test]
+    fn relocate_hand_off_forwards_the_launcher_flag() {
+        let _guard = SPAWN_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        SPAWN_CALLS.store(0, Ordering::SeqCst);
+        SPAWN_ARGS.lock().expect("spawn args lock").clear();
+        SPAWN_LAUNCHER.lock().expect("spawn launcher lock").clear();
+
+        let base = unique_temp_dir("hand_off_launcher");
+        let drive = base.join("drive");
+        let drive_str = drive.to_string_lossy().to_string();
+
+        let mut host = test_host();
+        host.spawn_relocated_copy = record_spawn_ok;
+        let mut app =
+            App::bootstrap(launcher_outcome(true, base.join("installer")), host)
+                .expect("bootstrap");
+
+        app.handle(Event::DriveChosen {
+            drive: drive_str.clone(),
+        })
+        .expect("clean drive");
+
+        assert_eq!(SPAWN_CALLS.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            SPAWN_LAUNCHER.lock().expect("spawn launcher lock").clone(),
+            vec![true],
+            "the hand-off forwards --launcher to the relocated copy"
+        );
+        assert!(app.should_close());
         cleanup(&base);
     }
 

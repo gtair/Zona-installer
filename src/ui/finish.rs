@@ -54,7 +54,6 @@ pub fn draw(ui: &mut egui::Ui, view: &ViewModel, events: &mut Vec<Event>) {
 fn action_label(action: FinishActionId) -> &'static str {
     match action {
         FinishActionId::DeleteDownloads => "Delete downloads",
-        FinishActionId::CreateShortcut => "Create shortcuts",
         FinishActionId::StartGame => "Start the game",
     }
 }
@@ -95,7 +94,6 @@ fn record_rect(id: &str, rect: egui::Rect, enabled: bool) {
 fn action_key(action: FinishActionId) -> &'static str {
     match action {
         FinishActionId::DeleteDownloads => "__finish_delete_downloads__",
-        FinishActionId::CreateShortcut => "__finish_create_shortcut__",
         FinishActionId::StartGame => "__finish_start_game__",
     }
 }
@@ -106,15 +104,11 @@ mod tests {
     use std::collections::HashSet;
     use zona_installer::app::{FinishAction, InstallProgress, Phase};
 
-    /// The three finish actions the core seeds in `enter_finished`, unchecked.
+    /// The two finish actions the core seeds in `enter_finished`, unchecked.
     fn actions() -> Vec<FinishAction> {
         vec![
             FinishAction {
                 action: FinishActionId::DeleteDownloads,
-                enabled: false,
-            },
-            FinishAction {
-                action: FinishActionId::CreateShortcut,
                 enabled: false,
             },
             FinishAction {
@@ -153,10 +147,6 @@ mod tests {
         assert_eq!(
             action_label(FinishActionId::DeleteDownloads),
             "Delete downloads"
-        );
-        assert_eq!(
-            action_label(FinishActionId::CreateShortcut),
-            "Create shortcuts"
         );
         assert_eq!(action_label(FinishActionId::StartGame), "Start the game");
     }
@@ -276,9 +266,9 @@ mod tests {
 
     // ---- tests ------------------------------------------------------------
 
-    /// Renders the completion message, Finish button and three checkboxes.
+    /// Renders the completion message, Finish button and two checkboxes.
     #[test]
-    fn renders_message_finish_button_and_three_checkboxes() {
+    fn renders_message_finish_button_and_two_checkboxes() {
         let ctx = egui::Context::default();
         let view = view(actions());
         let texts = paint(&ctx, &view);
@@ -291,7 +281,7 @@ mod tests {
             painted(&texts, "Finish"),
             "the Finish button must be painted: {texts:?}"
         );
-        for label in ["Delete downloads", "Create shortcuts", "Start the game"] {
+        for label in ["Delete downloads", "Start the game"] {
             assert!(
                 painted(&texts, label),
                 "checkbox {label:?} painted: {texts:?}"
@@ -305,11 +295,11 @@ mod tests {
         let ctx = egui::Context::default();
         let view = view(actions());
 
-        let events = click(&ctx, &view, action_key(FinishActionId::CreateShortcut));
+        let events = click(&ctx, &view, action_key(FinishActionId::StartGame));
         assert_eq!(
             events,
             vec![Event::FinishAction {
-                action: FinishActionId::CreateShortcut,
+                action: FinishActionId::StartGame,
                 on: true,
             }]
         );

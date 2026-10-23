@@ -406,7 +406,12 @@ mod tests {
 
     /// The relocated-copy hand-off seam: never reached (this host never
     /// relocates).
-    fn noop_spawn(_mode: &RootMode, _new_exe: &Path, _old_dir: &Path) -> Result<SpawnOutcome> {
+    fn noop_spawn(
+        _mode: &RootMode,
+        _new_exe: &Path,
+        _old_dir: &Path,
+        _launcher: bool,
+    ) -> Result<SpawnOutcome> {
         Ok(SpawnOutcome::Disabled)
     }
 
@@ -433,6 +438,11 @@ mod tests {
         })
     }
 
+    /// The launcher MO2 seam: never reached (this host never opens the launcher).
+    fn noop_launch(_exe: &Path, _cwd: &Path, _with_profile: bool) -> Result<()> {
+        Ok(())
+    }
+
     fn test_host() -> Host {
         Host {
             drives: one_drive,
@@ -443,6 +453,7 @@ mod tests {
             start_install: noop_install,
             restart_install: noop_restart,
             run_finish_actions: noop_finish,
+            launch_mo2: noop_launch,
             flash_taskbar: noop_flash,
         }
     }
@@ -454,6 +465,7 @@ mod tests {
             mode: RootMode::Shipped,
             install_root: PathBuf::from(r"C:\Zona\installer"),
             needs_relocation: false,
+            launcher: false,
             debug: crate::preflight::DebugOptions::default(),
         };
         App::bootstrap(outcome, host).expect("bootstrap app")

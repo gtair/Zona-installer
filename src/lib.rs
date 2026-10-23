@@ -17,4 +17,5 @@ pub mod preflight;
 pub mod run;
 pub mod template;
 pub mod toolout;
+pub mod update;
 pub mod win32;
