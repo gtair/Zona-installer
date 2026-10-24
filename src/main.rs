@@ -49,6 +49,10 @@ impl eframe::App for ZonaInstallerApp {
                     ctx.request_repaint();
                 }
                 let view = app.view_model();
+                // The credits notice, pinned to the bottom of every screen.
+                egui::TopBottomPanel::bottom("credits").show(ctx, |ui| {
+                    ui::footer(ui);
+                });
                 egui::CentralPanel::default().show(ctx, |ui| {
                     draw_screen(ui, view, &mut events);
                 });
@@ -322,7 +326,7 @@ mod tests {
             drive: "C:\\".to_string(),
         }));
         assert!(
-            prompt.iter().any(|text| text == "Delete and continue"),
+            prompt.iter().any(|text| text == "Replace and continue"),
             "the exists-prompt must paint its choices: {prompt:?}"
         );
     }

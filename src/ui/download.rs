@@ -31,7 +31,7 @@ pub fn draw(ui: &mut egui::Ui, view: &ViewModel, _events: &mut Vec<Event>) {
     ui.add_space(8.0);
 
     // Cap the list and let it scroll so trailing captions stay on screen.
-    let list_height = (ui.available_height() - 48.0).max(120.0);
+    let list_height = (ui.available_height() - 8.0).max(120.0);
     egui::ScrollArea::vertical()
         .max_height(list_height)
         .auto_shrink([false, true])
@@ -44,16 +44,6 @@ pub fn draw(ui: &mut egui::Ui, view: &ViewModel, _events: &mut Vec<Event>) {
                 ui.add_space(6.0);
             }
         });
-
-    ui.add_space(4.0);
-    ui.separator();
-
-    // Resume-on-failure is fixed copy: aria2c's `--continue` guarantees it, and
-    // resume is carried by the byte counts, not a separate flag.
-    ui.horizontal_wrapped(|ui| {
-        ui.label("S.T.A.L.K.E.R. Zona windows installer. Made by");
-        ui.hyperlink_to("Gtair", "https://github.com/gtair")
-    });
 }
 
 /// The bar fraction for one row: `pct / 100`, `1.0` when Completed, or `None`
@@ -536,18 +526,6 @@ mod tests {
                 "{name} is a row header"
             );
         }
-    }
-
-    /// The resume-on-failure note is rendered (fixed copy; resume is carried by
-    /// the byte counts).
-    #[test]
-    fn renders_the_resume_on_failure_note() {
-        let texts = paint(&view(real_config_rows()));
-        assert!(
-            texts.iter().any(|(_, text)| text
-                == "S.T.A.L.K.E.R. Zona windows installer. Made by "),
-            "the resume note is painted"
-        );
     }
 
     // ---- bar math and per-file bars ---------------------------------------

@@ -310,8 +310,8 @@ mod tests {
             "the prompt must name the conflicting folder: {texts:?}"
         );
         assert!(
-            painted(&texts, "Delete and continue"),
-            "the delete choice must be offered: {texts:?}"
+            painted(&texts, "Replace and continue"),
+            "the replace choice must be offered: {texts:?}"
         );
         assert!(
             painted(&texts, "Cancel"),
