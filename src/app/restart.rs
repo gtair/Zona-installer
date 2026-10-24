@@ -99,6 +99,8 @@ mod tests {
     fn config() -> Config {
         Config {
             version: 1,
+            current_version: None,
+            github_repo: None,
             choices: vec![node(
                 "install_zona",
                 vec![node("sss23", vec![leaf("bhs_hud")])],

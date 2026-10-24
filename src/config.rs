@@ -128,6 +128,15 @@ pub struct Step {
 pub struct Config {
     /// Schema version; currently `1`.
     pub version: u32,
+    /// The installer's own version (e.g. `v0.2.0`), compared against the GitHub
+    /// release tag by the self-update check. Absent falls back to the compiled-in
+    /// Cargo package version.
+    #[serde(default)]
+    pub current_version: Option<String>,
+    /// The `owner/repo` GitHub repository the self-update check reads releases
+    /// from. Absent falls back to the compiled-in default.
+    #[serde(default)]
+    pub github_repo: Option<String>,
     /// Recursive user-selectable option tree.
     #[serde(default)]
     pub choices: Vec<ChoiceNode>,
@@ -701,9 +710,24 @@ steps:
     fn missing_optional_sections_default_to_empty() {
         let config = parse_config("version: 1\n").expect("minimal config parses");
         assert_eq!(config.version, 1);
+        assert!(config.current_version.is_none());
+        assert!(config.github_repo.is_none());
         assert!(config.choices.is_empty());
         assert!(config.assets.is_empty());
         assert!(config.steps.is_empty());
+    }
+
+    #[test]
+    fn parses_the_update_version_and_repo() {
+        let config = parse_config(
+            "version: 1\ncurrent_version: v0.2.0\ngithub_repo: gtair/Zona-installer\n",
+        )
+        .expect("update fields parse");
+        assert_eq!(config.current_version.as_deref(), Some("v0.2.0"));
+        assert_eq!(
+            config.github_repo.as_deref(),
+            Some("gtair/Zona-installer")
+        );
     }
 
     // ---- validation (reject at load) --------------------------------------

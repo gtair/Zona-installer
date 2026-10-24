@@ -86,6 +86,8 @@ mod tests {
     fn config_with(assets: Vec<Asset>, steps: Vec<Step>) -> Config {
         Config {
             version: 1,
+            current_version: None,
+            github_repo: None,
             choices: Vec::new(),
             assets,
             steps,

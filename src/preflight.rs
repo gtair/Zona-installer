@@ -131,14 +131,26 @@ pub fn run(exe_dir: &Path) -> Result<PreflightOutcome> {
         std::mem::forget(handle);
     }
     // Self-update: only from a canonical shipped install (post-relocation), and
-    // never under the debug root override. A newer release hands off to the
-    // PowerShell script and this process exits immediately.
+    // never under the debug root override. The version/repo come from
+    // `config.yaml`; when either is missing the check is skipped entirely. A
+    // newer release hands off to the PowerShell script and this process exits.
     if matches!(outcome.mode, RootMode::Shipped) && !outcome.needs_relocation {
-        if update::maybe_self_update(exe_dir, launcher, debug) {
-            std::process::exit(0);
+        if let Some((version, repo)) = update_source(&outcome.install_root) {
+            if update::maybe_self_update(exe_dir, launcher, debug, &version, &repo) {
+                std::process::exit(0);
+            }
         }
     }
     Ok(outcome)
+}
+
+/// Resolves the self-update source (current version + GitHub repo) from
+/// `config.yaml`. Returns `None` (and the check is skipped) when the file is
+/// missing, unparseable, or omits either key.
+fn update_source(install_root: &Path) -> Option<(String, String)> {
+    let config_path = paths::resolved_paths(install_root).config;
+    let config = crate::config::parse_config(&std::fs::read_to_string(&config_path).ok()?).ok()?;
+    Some((config.current_version?, config.github_repo?))
 }
 
 /// Opens the console and the run log for the directory the binary launched from.

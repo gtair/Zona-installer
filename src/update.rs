@@ -9,7 +9,7 @@
 //! original flags. The console window the script opens is the "updating" UI —
 //! there is no in-app spinner.
 //!
-//! The version comparison lives here (the Cargo package version against the
+//! The version comparison lives here (the configured version against the
 //! release tag, both normalized by stripping a leading `v`); the download and
 //! extract are delegated to PowerShell so a ~5MB update needs no bundled HTTP
 //! or archive tooling.
@@ -22,19 +22,11 @@ use std::process::Command;
 use crate::error::{AppError, Result};
 use crate::preflight::DebugOptions;
 
-/// The GitHub repository releases are read from.
-const UPDATE_REPO: &str = "gtair/Zona-installer";
-
 /// The User-Agent GitHub requires on API requests.
 const USER_AGENT: &str = "zona-installer";
 
 /// The bundled update script, relative to `dependencies\`.
 const UPDATE_SCRIPT: &str = "update.ps1";
-
-/// The current installer version, `v`-prefixed to match the release tags.
-pub fn current_version() -> String {
-    format!("v{}", env!("CARGO_PKG_VERSION"))
-}
 
 /// Strips a single leading `v`/`V` from a version tag (pure).
 pub fn strip_v(version: &str) -> &str {
@@ -102,11 +94,12 @@ pub(crate) struct Release {
 
 /// Fetches the latest release and its `.zip` asset (impure, best effort).
 ///
-/// A network or parse failure is treated as "no update", never a fatal error:
-/// the caller simply proceeds with the normal flow. Returns `None` when the
-/// check cannot complete or no `.zip` asset exists.
-pub(crate) fn check_for_update() -> Option<Release> {
-    let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
+/// `repo` is the `owner/repo` to query. A network or parse failure is treated
+/// as "no update", never a fatal error: the caller simply proceeds with the
+/// normal flow. Returns `None` when the check cannot complete or no `.zip`
+/// asset exists.
+pub(crate) fn check_for_update(repo: &str) -> Option<Release> {
+    let url = format!("https://api.github.com/repos/{repo}/releases/latest");
     let mut response = match ureq::get(&url).header("User-Agent", USER_AGENT).call() {
         Ok(response) => response,
         Err(error) => {
@@ -208,25 +201,33 @@ fn spawn_update(exe_dir: &Path, release: &Release, relaunch: &str) -> Result<()>
 
 /// Runs the self-update check from a canonical shipped install.
 ///
+/// `current_version` is the installer version to compare against and `repo` is
+/// the GitHub `owner/repo` to query, both read from `config.yaml`.
+///
 /// Returns `true` when an update was handed off to the script and the caller
 /// must exit immediately; `false` otherwise (no update, offline, or a failed
 /// hand-off — all of which let the installer continue normally).
-pub fn maybe_self_update(exe_dir: &Path, launcher: bool, debug: DebugOptions) -> bool {
-    let Some(release) = check_for_update() else {
+pub fn maybe_self_update(
+    exe_dir: &Path,
+    launcher: bool,
+    debug: DebugOptions,
+    current_version: &str,
+    repo: &str,
+) -> bool {
+    let Some(release) = check_for_update(repo) else {
         return false;
     };
-    let current = current_version();
-    if !is_newer(&release.tag, &current) {
+    if !is_newer(&release.tag, current_version) {
         log::info!(
             target: "update",
-            "up to date ({current}; latest {})",
+            "up to date ({current_version}; latest {})",
             release.tag
         );
         return false;
     }
     log::info!(
         target: "update",
-        "update available: {current} -> {}",
+        "update available: {current_version} -> {}",
         release.tag
     );
     let relaunch = relaunch_args_string(launcher, debug);

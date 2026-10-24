@@ -1,4 +1,6 @@
 version: 1
+current_version: "v0.2.0"
+github_repo: "gtair/Zona-installer"
 
 
 choices:

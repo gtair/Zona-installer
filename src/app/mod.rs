@@ -1407,6 +1407,8 @@ mod tests {
     fn config() -> Config {
         Config {
             version: 1,
+            current_version: None,
+            github_repo: None,
             choices: tree(),
             assets: vec![
                 asset("template", ChoiceSpec::One("base".to_string())),

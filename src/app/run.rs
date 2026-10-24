@@ -372,6 +372,8 @@ mod tests {
     fn leaf_config(_root: &Path) -> Result<Config> {
         Ok(Config {
             version: 1,
+            current_version: None,
+            github_repo: None,
             choices: vec![leaf("only")],
             assets: Vec::new(),
             steps: Vec::new(),
