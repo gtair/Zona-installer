@@ -3,8 +3,10 @@
 //! When the binary is not yet at `<drive>:\Zona\installer`, the pre-flight flow
 //! asks the user for a drive and relocates. Only the installer binary and the
 //! `dependencies\` folder move; `downloads\` and everything else stay behind. If
-//! `<drive>:\Zona` already exists the move does not happen: [`relocate`] reports
-//! [`RelocateOutcome::TargetExists`] and the app core decides delete-or-cancel.
+//! `<drive>:\Zona\installer` already exists the move does not happen: [`relocate`]
+//! reports [`RelocateOutcome::TargetExists`] and the app core decides
+//! delete-or-cancel. Only the installer folder is ever deleted, so sibling game
+//! folders (`mo2\`, `anomaly\`) under `<drive>:\Zona` are left untouched.
 //!
 //! Windows cannot delete the folder a running executable was started from, so
 //! the old process spawns the new (relocated) copy with a `/delete <old-dir>`
@@ -40,10 +42,11 @@ const DEPENDENCIES_DIR: &str = "dependencies";
 pub enum RelocateOutcome {
     /// The debug root override is active; nothing was moved or spawned.
     Disabled,
-    /// `<chosen>:\Zona` already exists; the app core decides delete-or-cancel.
+    /// `<chosen>:\Zona\installer` already exists; the app core decides
+    /// delete-or-cancel.
     TargetExists {
-        /// `<chosen>:\Zona`.
-        zona_dir: PathBuf,
+        /// `<chosen>:\Zona\installer`.
+        install_root: PathBuf,
     },
     /// The binary and `dependencies\` were moved.
     Relocated {
@@ -70,8 +73,8 @@ pub struct SelfDeleteCommand {
 /// `chosen_drive` is a drive root such as `C:\`. The move covers exactly the
 /// binary ([`INSTALLER_BINARY`]) and `dependencies\`; `downloads\` is left in
 /// `exe_dir`. This performs the target-existence check but does NOT delete
-/// `<chosen>:\Zona` when it exists; the relocated copy deletes the old folder
-/// via the self-delete arguments.
+/// `<chosen>:\Zona\installer` when it exists; the relocated copy deletes the old
+/// folder via the self-delete arguments.
 pub fn relocate(exe_dir: &Path, chosen_drive: &Path) -> Result<RelocateOutcome> {
     if detect_root_mode(exe_dir).relocation_disabled() {
         return Ok(RelocateOutcome::Disabled);
@@ -224,15 +227,15 @@ fn validate_old_folder(
 ///
 /// `zona_dir` is `<chosen>:\Zona`. Splitting this out of [`relocate`] lets tests
 /// exercise the target-existence check and the move with a temporary directory
-/// instead of a real drive path.
+/// instead of a real drive path. Only the `installer` sub-directory is checked
+/// and created, so a pre-existing game install (`mo2\`, `anomaly\`) under
+/// `zona_dir` is left alone.
 fn relocate_to(exe_dir: &Path, zona_dir: &Path) -> Result<RelocateOutcome> {
-    if zona_dir.exists() {
-        return Ok(RelocateOutcome::TargetExists {
-            zona_dir: zona_dir.to_path_buf(),
-        });
+    let install_root = zona_dir.join("installer");
+    if install_root.exists() {
+        return Ok(RelocateOutcome::TargetExists { install_root });
     }
 
-    let install_root = zona_dir.join("installer");
     let new_exe = install_root.join(INSTALLER_BINARY);
     let old_dir = exe_dir.to_path_buf();
 
@@ -252,7 +255,7 @@ fn relocate_to(exe_dir: &Path, zona_dir: &Path) -> Result<RelocateOutcome> {
     )
     .and_then(|()| copy_file(&exe_dir.join(INSTALLER_BINARY), &new_exe));
     if let Err(error) = copied {
-        let _ = std::fs::remove_dir_all(zona_dir);
+        let _ = std::fs::remove_dir_all(&install_root);
         return Err(error);
     }
 
@@ -640,20 +643,23 @@ mod tests {
         let exe_dir = unique_temp_dir("src");
         let drive_root = unique_temp_dir("drive");
         let zona_dir = drive_root.join("Zona");
+        let install_root = zona_dir.join("installer");
 
         write(&exe_dir.join("zona-installer.exe"), "fake exe");
         write(&exe_dir.join("dependencies/aria2c.exe"), "aria2c");
-        write(&zona_dir.join("marker.txt"), "pre-existing");
+        write(&install_root.join("marker.txt"), "pre-existing");
 
         let outcome = relocate(&exe_dir, &drive_root).expect("relocate");
 
         match outcome {
-            RelocateOutcome::TargetExists { zona_dir: reported } => assert_eq!(reported, zona_dir),
+            RelocateOutcome::TargetExists { install_root: reported } => {
+                assert_eq!(reported, install_root)
+            }
             other => panic!("expected TargetExists, got {other:?}"),
         }
 
-        // The pre-existing Zona directory is untouched...
-        assert!(zona_dir.join("marker.txt").exists());
+        // The pre-existing installer directory is untouched...
+        assert!(install_root.join("marker.txt").exists());
         // ...and nothing was moved out of the source.
         assert!(exe_dir.join("zona-installer.exe").exists());
         assert!(exe_dir.join("dependencies/aria2c.exe").exists());

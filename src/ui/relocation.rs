@@ -47,17 +47,17 @@ fn draw_drive_picker(ui: &mut egui::Ui, drives: &[String], events: &mut Vec<Even
     }
 }
 
-/// The `<drive>:\Zona already exists` prompt.
+/// The `<drive>:\Zona\installer already exists` prompt.
 ///
 /// Delete forwards [`Event::RelocateTarget`] with `delete: true`; Cancel
 /// forwards it with `delete: false`.
 fn draw_target_exists(ui: &mut egui::Ui, drive: &str, events: &mut Vec<Event>) {
-    ui.heading("A Zona folder already exists on that drive");
-    ui.label(format!("{} already exists.", zona_display(drive)));
-    ui.label("Deleting it removes everything inside, including any previous installation.");
+    ui.heading("The Zona installer already exists on that drive");
+    ui.label(format!("{} already exists.", install_target_display(drive)));
+    ui.label("Do you wish to replace it?");
     ui.add_space(8.0);
 
-    let delete = ui.button("Delete and continue");
+    let delete = ui.button("Replace and continue");
     #[cfg(test)]
     record_rect(DELETE_KEY, delete.rect, delete.enabled());
     if delete.clicked() {
@@ -72,12 +72,13 @@ fn draw_target_exists(ui: &mut egui::Ui, drive: &str, events: &mut Vec<Event>) {
     }
 }
 
-/// The `<drive>:\Zona` path for display, given a `C:\`-style drive root.
-fn zona_display(drive: &str) -> String {
+/// The `<drive>:\Zona\installer` path for display, given a `C:\`-style drive
+/// root.
+fn install_target_display(drive: &str) -> String {
     if drive.ends_with('\\') || drive.ends_with('/') {
-        format!("{drive}Zona")
+        format!("{drive}Zona\\installer")
     } else {
-        format!("{drive}\\Zona")
+        format!("{drive}\\Zona\\installer")
     }
 }
 
@@ -151,10 +152,10 @@ mod tests {
     /// The display path joins the trailing separator once, for both shapes of
     /// drive root the picker can hand over.
     #[test]
-    fn zona_display_joins_the_separator_once() {
-        assert_eq!(zona_display("C:\\"), "C:\\Zona");
-        assert_eq!(zona_display("D:/"), "D:/Zona");
-        assert_eq!(zona_display("E:"), "E:\\Zona");
+    fn install_target_display_joins_the_separator_once() {
+        assert_eq!(install_target_display("C:\\"), "C:\\Zona\\installer");
+        assert_eq!(install_target_display("D:/"), "D:/Zona\\installer");
+        assert_eq!(install_target_display("E:"), "E:\\Zona\\installer");
     }
 
     // ---- headless driving -------------------------------------------------
@@ -305,7 +306,7 @@ mod tests {
 
         let texts = paint(&ctx, &view);
         assert!(
-            painted(&texts, "C:\\Zona already exists."),
+            painted(&texts, "C:\\Zona\\installer already exists."),
             "the prompt must name the conflicting folder: {texts:?}"
         );
         assert!(

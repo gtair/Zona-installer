@@ -98,9 +98,9 @@ pub enum Phase {
         /// The `C:\`-style roots offered.
         drives: Vec<String>,
     },
-    /// `<drive>:\Zona` already exists: delete it or cancel.
+    /// `<drive>:\Zona\installer` already exists: delete it or cancel.
     RelocationTargetExists {
-        /// The chosen drive whose `Zona` directory already exists.
+        /// The chosen drive whose `Zona\installer` directory already exists.
         drive: String,
     },
     /// The launcher window (three options: installer / MO2 / game), shown when
@@ -290,9 +290,10 @@ pub enum Event {
         /// A `C:\`-style root.
         drive: String,
     },
-    /// The user answered the `<drive>:\Zona` exists prompt.
+    /// The user answered the `<drive>:\Zona\installer` exists prompt.
     RelocateTarget {
-        /// `true` deletes the existing `Zona` directory, `false` cancels.
+        /// `true` deletes the existing `Zona\installer` directory, `false`
+        /// cancels.
         delete: bool,
     },
     /// The user chose to proceed into the installer from the launcher.
@@ -843,7 +844,7 @@ impl App {
         match outcome {
             // Relocation disabled (dev override): continue with the normal flow.
             RelocateOutcome::Disabled => self.enter_choices(),
-            // `<drive>:\Zona` exists: ask the user to delete or cancel.
+            // `<drive>:\Zona\installer` exists: ask the user to delete or cancel.
             RelocateOutcome::TargetExists { .. } => {
                 self.view.phase = Phase::RelocationTargetExists {
                     drive: drive.to_string(),
@@ -881,7 +882,7 @@ impl App {
         }
     }
 
-    /// `RelocateTarget`: delete the existing `Zona` directory or cancel.
+    /// `RelocateTarget`: delete the existing `Zona\installer` directory or cancel.
     fn resolve_target(&mut self, delete: bool) -> Result<()> {
         let drive = match &self.view.phase {
             Phase::RelocationTargetExists { drive } => drive.clone(),
@@ -894,20 +895,20 @@ impl App {
             };
             return Ok(());
         }
-        let zona_dir = relocate::zona_dir_for_drive(Path::new(&drive));
-        if relocate::path_is_under(&self.install_root, &zona_dir) {
+        let install_root = relocate::install_root_for_drive(Path::new(&drive));
+        if relocate::path_is_under(&self.install_root, &install_root) {
             return Err(AppError::Fatal {
                 message: format!(
                     "{} contains this installer ({}); deleting it would destroy the running \
                      installer. Move the installer folder out of it and run it again.",
-                    zona_dir.display(),
+                    install_root.display(),
                     self.install_root.display()
                 ),
                 error_id: ErrorId::new("E_TARGET_CONTAINS_INSTALLER"),
                 log_path: None,
             });
         }
-        delete_zona_target(&zona_dir)?;
+        delete_install_target(&install_root)?;
         let relocate = self.host.relocate;
         let outcome = relocate(&self.install_root, Path::new(&drive))?;
         self.apply_relocate_outcome(&drive, outcome)
@@ -1249,17 +1250,18 @@ fn remove_ids(node: &ChoiceNode, selected: &mut HashSet<ChoiceId>) {
     }
 }
 
-/// Deletes a pre-existing `<drive>:\Zona`.
+/// Deletes a pre-existing `<drive>:\Zona\installer`.
 ///
-/// A missing directory is treated as already deleted; any other I/O failure is
-/// fatal.
-fn delete_zona_target(zona_dir: &Path) -> Result<()> {
-    match std::fs::remove_dir_all(zona_dir) {
+/// Only the installer folder is removed, so sibling game folders (`mo2\`,
+/// `anomaly\`) under `<drive>:\Zona` are left untouched. A missing directory is
+/// treated as already deleted; any other I/O failure is fatal.
+fn delete_install_target(install_root: &Path) -> Result<()> {
+    match std::fs::remove_dir_all(install_root) {
         Ok(()) => Ok(()),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(AppError::Io {
-            context: "delete existing Zona target".to_string(),
-            path: Some(zona_dir.to_path_buf()),
+            context: "delete existing Zona installer".to_string(),
+            path: Some(install_root.to_path_buf()),
             source,
         }),
     }
@@ -1470,13 +1472,12 @@ mod tests {
     }
 
     /// A deterministic, filesystem-based stand-in for `relocate`: it reports
-    /// `TargetExists` exactly when `<drive>\Zona` exists on disk.
+    /// `TargetExists` exactly when `<drive>\Zona\installer` exists on disk.
     fn relocate_by_fs(exe_dir: &Path, drive: &Path) -> Result<RelocateOutcome> {
-        let zona_dir = relocate::zona_dir_for_drive(drive);
-        if zona_dir.exists() {
-            Ok(RelocateOutcome::TargetExists { zona_dir })
+        let install_root = relocate::install_root_for_drive(drive);
+        if install_root.exists() {
+            Ok(RelocateOutcome::TargetExists { install_root })
         } else {
-            let install_root = relocate::install_root_for_drive(drive);
             Ok(RelocateOutcome::Relocated {
                 new_exe: install_root.join("zona-installer.exe"),
                 install_root,
@@ -1602,11 +1603,10 @@ mod tests {
     /// the guard test asserts on (via the phase, not merely the call count).
     fn record_relocate_creating_target(exe_dir: &Path, drive: &Path) -> Result<RelocateOutcome> {
         RELOCATE_CALLS.fetch_add(1, Ordering::SeqCst);
-        let zona_dir = relocate::zona_dir_for_drive(drive);
-        if zona_dir.exists() {
-            return Ok(RelocateOutcome::TargetExists { zona_dir });
-        }
         let install_root = relocate::install_root_for_drive(drive);
+        if install_root.exists() {
+            return Ok(RelocateOutcome::TargetExists { install_root });
+        }
         std::fs::create_dir_all(&install_root).map_err(|source| AppError::Io {
             context: "create relocated install root".to_string(),
             path: Some(install_root.clone()),
@@ -2250,9 +2250,10 @@ mod tests {
         );
         assert!(app.should_close(), "a successful hand-off asks to close");
 
-        // (b) With an existing `<drive>\Zona`, the outcome reports TargetExists.
-        let zona = relocate::zona_dir_for_drive(&drive);
-        std::fs::create_dir_all(&zona).expect("create zona");
+        // (b) With an existing `<drive>\Zona\installer`, the outcome reports
+        // TargetExists.
+        let install_root = relocate::install_root_for_drive(&drive);
+        std::fs::create_dir_all(&install_root).expect("create installer");
         let mut app =
             App::bootstrap(outcome(true, base.join("installer")), test_host()).expect("bootstrap");
         app.handle(Event::DriveChosen {
@@ -2275,9 +2276,13 @@ mod tests {
         let drive = base.join("drive");
         let drive_str = drive.to_string_lossy().to_string();
         let zona = relocate::zona_dir_for_drive(&drive);
-        std::fs::create_dir_all(&zona).expect("create zona");
-        let marker = zona.join("marker.txt");
+        let install_root = relocate::install_root_for_drive(&drive);
+        std::fs::create_dir_all(&install_root).expect("create installer");
+        let marker = install_root.join("marker.txt");
         std::fs::write(&marker, "keep").expect("write marker");
+        // A sibling game folder that must survive a delete of just the installer.
+        let mo2 = zona.join("mo2");
+        std::fs::create_dir_all(&mo2).expect("create mo2");
 
         let _guard = SPAWN_LOCK.lock().unwrap_or_else(|error| error.into_inner());
         SPAWN_CALLS.store(0, Ordering::SeqCst);
@@ -2317,7 +2322,14 @@ mod tests {
         ));
         app.handle(Event::RelocateTarget { delete: true })
             .expect("delete");
-        assert!(!zona.exists(), "delete: true must remove the target");
+        assert!(
+            !install_root.exists(),
+            "delete: true must remove the installer target"
+        );
+        assert!(
+            mo2.exists(),
+            "delete: true must leave sibling game folders untouched"
+        );
         assert_eq!(SPAWN_CALLS.load(Ordering::SeqCst), 1);
         assert!(matches!(app.view_model().phase, Phase::Relocation { .. }));
         assert!(
