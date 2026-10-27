@@ -9,8 +9,8 @@
 //!
 //! The startup flow is modelled as a [`Phase`] machine:
 //!
-//! `Preflight -> Relocation { drives } / Choices -> Downloading -> Installing ->
-//! VerifyGame -> Finished / Fatal`
+//! `Preflight -> Relocation { drives } / Launcher -> Choices -> Downloading ->
+//! Installing -> VerifyGame -> Finished / Fatal`
 //!
 //! Every error returned by [`App::handle`] is also recorded in [`Phase::Fatal`],
 //! so the GUI can always render the support popup from the view model alone.
@@ -103,8 +103,8 @@ pub enum Phase {
         /// The chosen drive whose `Zona\installer` directory already exists.
         drive: String,
     },
-    /// The launcher window (three options: installer / MO2 / game), shown when
-    /// the installer starts from its canonical home with `--launcher`.
+    /// The launcher window (three options: installer / MO2 / game), shown once
+    /// the installer sits in its canonical home.
     Launcher {
         /// Whether `..\mo2\ModOrganizer.exe` exists, i.e. the game is installed.
         /// The MO2/Zona options are disabled when false.
@@ -330,9 +330,9 @@ pub(crate) struct Host {
     /// Performs the relocation move (does not delete an existing target).
     pub(crate) relocate: fn(&Path, &Path) -> Result<RelocateOutcome>,
     /// Spawns the relocated copy with `/delete <old_dir>` so it can remove the
-    /// old folder and carry the run on. The bool forwards `--launcher`. Returns
-    /// [`SpawnOutcome::Disabled`] under the dev override.
-    pub(crate) spawn_relocated_copy: fn(&RootMode, &Path, &Path, bool) -> Result<SpawnOutcome>,
+    /// old folder and carry the run on. Returns [`SpawnOutcome::Disabled`] under
+    /// the dev override.
+    pub(crate) spawn_relocated_copy: fn(&RootMode, &Path, &Path) -> Result<SpawnOutcome>,
     /// Starts the download worker.
     pub(crate) start_download: fn(&mut App) -> Result<()>,
     /// Starts the install worker.
@@ -378,9 +378,6 @@ pub struct App {
     /// [`Host::spawn_relocated_copy`]. It decides whether the spawn is disabled
     /// (dev override).
     mode: RootMode,
-    /// Whether the run was launched with `--launcher`, so a relocation hand-off
-    /// can forward it to the relocated copy.
-    launcher: bool,
     /// The last drive list, kept so cancel/re-pick needs no Win32 call.
     drives: Vec<String>,
     progress_rx: Option<Receiver<ProgressEvent>>,
@@ -434,7 +431,6 @@ impl App {
     pub(crate) fn bootstrap(outcome: PreflightOutcome, host: Host) -> Result<App> {
         let install_root = outcome.install_root.clone();
         let mode = outcome.mode.clone();
-        let launcher = outcome.launcher;
         let mut app = App {
             view: ViewModel::empty(),
             host,
@@ -442,7 +438,6 @@ impl App {
             selected: HashSet::new(),
             install_root,
             mode,
-            launcher,
             drives: Vec::new(),
             progress_rx: None,
             wake: None,
@@ -464,10 +459,8 @@ impl App {
             }
             app.drives = drives.clone();
             app.view.phase = Phase::Relocation { drives };
-        } else if launcher {
-            app.enter_launcher();
         } else {
-            app.enter_choices()?;
+            app.enter_launcher();
         }
         Ok(app)
     }
@@ -669,8 +662,8 @@ impl App {
 
     /// Enters the launcher window, resolving whether the game is installed.
     ///
-    /// Reached only from a canonical install (`needs_relocation == false`) with
-    /// `--launcher`. `game_present` is the filesystem answer to "does
+    /// Reached only from a canonical install (`needs_relocation == false`).
+    /// `game_present` is the filesystem answer to "does
     /// `..\mo2\ModOrganizer.exe` exist?"; the two launch options are disabled
     /// when it is false.
     fn enter_launcher(&mut self) {
@@ -863,7 +856,7 @@ impl App {
                 self.install_root = install_root;
                 let mode = self.mode.clone();
                 let spawn = self.host.spawn_relocated_copy;
-                match spawn(&mode, &new_exe, &old_dir, self.launcher)? {
+                match spawn(&mode, &new_exe, &old_dir)? {
                     SpawnOutcome::Spawned { .. } => {
                         // The old process stays on the drive picker while it
                         // exits (it never reaches Choices; the relocated copy owns
@@ -1438,20 +1431,16 @@ mod tests {
             mode: RootMode::Shipped,
             install_root,
             needs_relocation,
-            launcher: false,
             debug: preflight::DebugOptions::default(),
         }
     }
 
-    /// A `PreflightOutcome` launched with `--launcher`.
-    fn launcher_outcome(needs_relocation: bool, install_root: PathBuf) -> PreflightOutcome {
-        PreflightOutcome {
-            mode: RootMode::Shipped,
-            install_root,
-            needs_relocation,
-            launcher: true,
-            debug: preflight::DebugOptions::default(),
-        }
+    /// Boots `outcome` through `host` and advances past the launcher into
+    /// `Choices`, the phase most flow tests start from.
+    fn choices_app(outcome: PreflightOutcome, host: Host) -> Result<App> {
+        let mut app = App::bootstrap(outcome, host)?;
+        app.handle(Event::LaunchInstaller)?;
+        Ok(app)
     }
 
     // ---- injectable host fns ---------------------------------------------
@@ -1588,7 +1577,6 @@ mod tests {
     /// pointer cannot capture, so the observations go in a static.
     static SPAWN_CALLS: AtomicUsize = AtomicUsize::new(0);
     static SPAWN_ARGS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
-    static SPAWN_LAUNCHER: Mutex<Vec<bool>> = Mutex::new(Vec::new());
     /// Serializes the recording-spawn tests (the observations are process-global
     /// statics, and tests run on parallel threads).
     static SPAWN_LOCK: Mutex<()> = Mutex::new(());
@@ -1623,17 +1611,12 @@ mod tests {
         _mode: &RootMode,
         new_exe: &Path,
         old_dir: &Path,
-        launcher: bool,
     ) -> Result<SpawnOutcome> {
         SPAWN_CALLS.fetch_add(1, Ordering::SeqCst);
         SPAWN_ARGS
             .lock()
             .expect("spawn args lock")
             .push((new_exe.to_path_buf(), old_dir.to_path_buf()));
-        SPAWN_LAUNCHER
-            .lock()
-            .expect("spawn launcher lock")
-            .push(launcher);
         Ok(SpawnOutcome::Spawned {
             command: relocate::self_delete_command(new_exe, old_dir),
         })
@@ -1645,7 +1628,6 @@ mod tests {
         _mode: &RootMode,
         _new_exe: &Path,
         _old_dir: &Path,
-        _launcher: bool,
     ) -> Result<SpawnOutcome> {
         Ok(SpawnOutcome::Disabled)
     }
@@ -1656,7 +1638,6 @@ mod tests {
         _mode: &RootMode,
         _new_exe: &Path,
         _old_dir: &Path,
-        _launcher: bool,
     ) -> Result<SpawnOutcome> {
         Err(AppError::Io {
             context: "spawn relocated installer".to_string(),
@@ -1755,7 +1736,7 @@ mod tests {
     #[test]
     fn handle_drives_the_expected_phase() {
         let root = unique_temp_dir("phases");
-        let mut app = App::bootstrap(outcome(false, root.clone()), test_host()).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), test_host()).expect("bootstrap");
         assert_eq!(app.view_model().phase, Phase::Choices);
 
         app.handle(Event::ChoiceToggled {
@@ -1804,7 +1785,7 @@ mod tests {
         let root = unique_temp_dir("fatal");
         let mut host = test_host();
         host.start_download = fail_download;
-        let mut app = App::bootstrap(outcome(false, root.clone()), host).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), host).expect("bootstrap");
         pick_complete_path(&mut app);
 
         let error = app
@@ -1834,7 +1815,7 @@ mod tests {
     #[test]
     fn progress_events_drive_verify_and_finish() {
         let root = unique_temp_dir("progress");
-        let mut app = App::bootstrap(outcome(false, root.clone()), test_host()).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), test_host()).expect("bootstrap");
         pick_complete_path(&mut app);
         app.handle(Event::ConfirmChoices).expect("confirm");
         app.handle(Event::BeginInstall).expect("begin");
@@ -1953,7 +1934,7 @@ mod tests {
     fn finish_ok_sets_should_close_and_err_is_fatal() {
         let root = unique_temp_dir("finish_close");
 
-        let mut app = App::bootstrap(outcome(false, root.clone()), test_host()).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), test_host()).expect("bootstrap");
         app.view.phase = Phase::Finished;
         app.view.finish_actions = unset_finish_actions();
         assert!(!app.should_close(), "not closed before Finish");
@@ -1969,7 +1950,7 @@ mod tests {
         // A failing seam: `should_close()` stays false and the phase is Fatal.
         let mut failing = test_host();
         failing.run_finish_actions = fail_finish;
-        let mut app2 = App::bootstrap(outcome(false, root.clone()), failing).expect("bootstrap");
+        let mut app2 = choices_app(outcome(false, root.clone()), failing).expect("bootstrap");
         app2.view.phase = Phase::Finished;
         app2.view.finish_actions = unset_finish_actions();
         let error = app2
@@ -2001,7 +1982,7 @@ mod tests {
         let root = unique_temp_dir("finish_reentry");
         let mut host = test_host();
         host.run_finish_actions = counting_finish;
-        let mut app = App::bootstrap(outcome(false, root.clone()), host).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), host).expect("bootstrap");
         app.view.phase = Phase::Finished;
         app.view.finish_actions = unset_finish_actions();
 
@@ -2038,7 +2019,7 @@ mod tests {
         let root = unique_temp_dir("finish_fail_guard");
         let mut host = test_host();
         host.run_finish_actions = fail_finish;
-        let mut app = App::bootstrap(outcome(false, root.clone()), host).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), host).expect("bootstrap");
         app.view.phase = Phase::Finished;
         app.view.finish_actions = unset_finish_actions();
 
@@ -2082,7 +2063,7 @@ mod tests {
         // Nothing enabled: a no-op — the downloads dir is kept, and neither the
         // real Desktop (shortcut) nor a game is touched.
         let mut idle =
-            App::bootstrap(outcome(false, root.clone()), test_host()).expect("bootstrap");
+            choices_app(outcome(false, root.clone()), test_host()).expect("bootstrap");
         idle.view.phase = Phase::Finished;
         idle.view.finish_actions = unset_finish_actions();
         production(&idle).expect("nothing enabled is a no-op");
@@ -2090,7 +2071,7 @@ mod tests {
 
         // Only DeleteDownloads: the wrapper deletes `<install_root>\downloads`.
         let mut active =
-            App::bootstrap(outcome(false, root.clone()), test_host()).expect("bootstrap");
+            choices_app(outcome(false, root.clone()), test_host()).expect("bootstrap");
         active.view.phase = Phase::Finished;
         active.view.finish_actions = vec![
             FinishAction {
@@ -2121,7 +2102,7 @@ mod tests {
         let root = unique_temp_dir("downloads_complete");
         let mut host = test_host();
         host.start_install = counting_install;
-        let mut app = App::bootstrap(outcome(false, root.clone()), host).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), host).expect("bootstrap");
         pick_complete_path(&mut app);
         app.handle(Event::ConfirmChoices).expect("confirm");
         assert_eq!(app.view_model().phase, Phase::Downloading);
@@ -2162,7 +2143,7 @@ mod tests {
     #[test]
     fn download_progress_event_updates_matching_row_only() {
         let root = unique_temp_dir("download_progress");
-        let mut app = App::bootstrap(outcome(false, root.clone()), test_host()).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), test_host()).expect("bootstrap");
         pick_complete_path(&mut app);
         app.handle(Event::ConfirmChoices).expect("confirm");
         assert_eq!(app.view_model().phase, Phase::Downloading);
@@ -2500,13 +2481,13 @@ mod tests {
 
     // ---- launcher ---------------------------------------------------------
 
-    /// A canonical start with `--launcher` (no relocation needed) opens the
-    /// launcher window; without a `mo2` install the game is reported absent.
+    /// A canonical start (no relocation needed) opens the launcher window;
+    /// without a `mo2` install the game is reported absent.
     #[test]
     fn launcher_opens_without_the_game_present() {
         let root = unique_temp_dir("launcher_absent");
         let app =
-            App::bootstrap(launcher_outcome(false, root.clone()), test_host()).expect("bootstrap");
+            App::bootstrap(outcome(false, root.clone()), test_host()).expect("bootstrap");
         assert_eq!(
             app.view_model().phase,
             Phase::Launcher { game_present: false }
@@ -2524,7 +2505,7 @@ mod tests {
         std::fs::create_dir_all(&mo2).expect("create mo2");
         std::fs::write(mo2.join("ModOrganizer.exe"), b"stub").expect("write exe");
 
-        let app = App::bootstrap(launcher_outcome(false, install_root), test_host())
+        let app = App::bootstrap(outcome(false, install_root), test_host())
             .expect("bootstrap");
         assert_eq!(
             app.view_model().phase,
@@ -2538,7 +2519,7 @@ mod tests {
     fn launcher_launch_installer_enters_choices() {
         let root = unique_temp_dir("launcher_installer");
         let mut app =
-            App::bootstrap(launcher_outcome(false, root.clone()), test_host()).expect("bootstrap");
+            App::bootstrap(outcome(false, root.clone()), test_host()).expect("bootstrap");
         app.handle(Event::LaunchInstaller).expect("launch installer");
         assert_eq!(app.view_model().phase, Phase::Choices);
         cleanup(&root);
@@ -2560,7 +2541,7 @@ mod tests {
         let mut host = test_host();
         host.launch_mo2 = record_launch;
         let mut app =
-            App::bootstrap(launcher_outcome(false, install_root), host).expect("bootstrap");
+            App::bootstrap(outcome(false, install_root), host).expect("bootstrap");
 
         app.handle(Event::LaunchMo2).expect("launch mo2");
         assert_eq!(LAUNCH_CALLS.load(Ordering::SeqCst), 1);
@@ -2593,7 +2574,7 @@ mod tests {
         let mut host = test_host();
         host.launch_mo2 = record_launch;
         let mut app =
-            App::bootstrap(launcher_outcome(false, install_root), host).expect("bootstrap");
+            App::bootstrap(outcome(false, install_root), host).expect("bootstrap");
 
         app.handle(Event::LaunchZona).expect("launch zona");
         assert_eq!(
@@ -2616,7 +2597,7 @@ mod tests {
         let mut host = test_host();
         host.launch_mo2 = record_launch;
         let mut app =
-            App::bootstrap(launcher_outcome(false, root.clone()), host).expect("bootstrap");
+            App::bootstrap(outcome(false, root.clone()), host).expect("bootstrap");
 
         app.handle(Event::LaunchMo2).expect("guarded noop");
         app.handle(Event::LaunchZona).expect("guarded noop");
@@ -2637,46 +2618,12 @@ mod tests {
         let mut host = test_host();
         host.launch_mo2 = fail_launch;
         let mut app =
-            App::bootstrap(launcher_outcome(false, install_root), host).expect("bootstrap");
+            App::bootstrap(outcome(false, install_root), host).expect("bootstrap");
 
         let error = app.handle(Event::LaunchMo2).expect_err("a failed launch must surface");
         assert_eq!(error.error_id().as_str(), "E_TEST_LAUNCH");
         assert!(matches!(app.view_model().phase, Phase::Fatal(_)));
         assert!(!app.should_close(), "a failed launch must not close");
-        cleanup(&base);
-    }
-
-    /// A `--launcher` start that still needs relocation forwards the flag to the
-    /// relocated copy through the hand-off.
-    #[test]
-    fn relocate_hand_off_forwards_the_launcher_flag() {
-        let _guard = SPAWN_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-        SPAWN_CALLS.store(0, Ordering::SeqCst);
-        SPAWN_ARGS.lock().expect("spawn args lock").clear();
-        SPAWN_LAUNCHER.lock().expect("spawn launcher lock").clear();
-
-        let base = unique_temp_dir("hand_off_launcher");
-        let drive = base.join("drive");
-        let drive_str = drive.to_string_lossy().to_string();
-
-        let mut host = test_host();
-        host.spawn_relocated_copy = record_spawn_ok;
-        let mut app =
-            App::bootstrap(launcher_outcome(true, base.join("installer")), host)
-                .expect("bootstrap");
-
-        app.handle(Event::DriveChosen {
-            drive: drive_str.clone(),
-        })
-        .expect("clean drive");
-
-        assert_eq!(SPAWN_CALLS.load(Ordering::SeqCst), 1);
-        assert_eq!(
-            SPAWN_LAUNCHER.lock().expect("spawn launcher lock").clone(),
-            vec![true],
-            "the hand-off forwards --launcher to the relocated copy"
-        );
-        assert!(app.should_close());
         cleanup(&base);
     }
 
@@ -2690,7 +2637,7 @@ mod tests {
         // A download-stage failure: fatal but NOT restartable.
         let mut host = test_host();
         host.start_download = fail_download;
-        let mut app = App::bootstrap(outcome(false, root.clone()), host).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), host).expect("bootstrap");
         pick_complete_path(&mut app);
         app.handle(Event::ConfirmChoices)
             .expect_err("download failure");
@@ -2708,7 +2655,7 @@ mod tests {
         // An install-stage failure: restartable, so it is dispatched.
         let mut host = test_host();
         host.start_install = fail_install;
-        let mut app = App::bootstrap(outcome(false, root.clone()), host).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), host).expect("bootstrap");
         pick_complete_path(&mut app);
         app.handle(Event::ConfirmChoices).expect("confirm");
         app.handle(Event::BeginInstall)
@@ -2735,7 +2682,7 @@ mod tests {
     #[test]
     fn choice_toggles_cascade_and_branches_are_exclusive() {
         let root = unique_temp_dir("choices");
-        let mut app = App::bootstrap(outcome(false, root.clone()), test_host()).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), test_host()).expect("bootstrap");
 
         app.handle(Event::ChoiceToggled {
             id: "install_zona".to_string(),
@@ -2796,7 +2743,7 @@ mod tests {
         let root = unique_temp_dir("repeated");
         let mut host = test_host();
         host.load_config = repeated_config;
-        let mut app = App::bootstrap(outcome(false, root.clone()), host).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), host).expect("bootstrap");
 
         // (e) With nothing selected, a bare repeated id establishes the first
         // branch in config order: install_zona.
@@ -2843,7 +2790,7 @@ mod tests {
         let root = unique_temp_dir("subtree");
         let mut host = test_host();
         host.load_config = repeated_config;
-        let mut app = App::bootstrap(outcome(false, root.clone()), host).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), host).expect("bootstrap");
 
         app.handle(toggle("install_zona", true)).expect("branch");
         app.handle(toggle("sss23", true)).expect("sss23");
@@ -2865,7 +2812,7 @@ mod tests {
     #[test]
     fn confirm_requires_a_complete_root_to_leaf_path() {
         let root = unique_temp_dir("confirm_gate");
-        let mut app = App::bootstrap(outcome(false, root.clone()), test_host()).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), test_host()).expect("bootstrap");
 
         // (a) Empty selection: not a complete path, Confirm is a no-op.
         assert!(
@@ -3005,7 +2952,7 @@ mod tests {
     fn app_downloading_with_recording_flash(root: &Path) -> (App, mpsc::Sender<ProgressEvent>) {
         let mut host = test_host();
         host.flash_taskbar = record_flash;
-        let mut app = App::bootstrap(outcome(false, root.to_path_buf()), host).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.to_path_buf()), host).expect("bootstrap");
         pick_complete_path(&mut app);
         app.handle(Event::ConfirmChoices).expect("confirm");
         let (tx, rx) = mpsc::channel();
@@ -3222,7 +3169,7 @@ mod tests {
         let mut host = test_host();
         host.flash_taskbar = record_flash;
         host.start_download = fail_download;
-        let mut app = App::bootstrap(outcome(false, root.clone()), host).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), host).expect("bootstrap");
         pick_complete_path(&mut app);
 
         app.handle(Event::ConfirmChoices)
@@ -3247,7 +3194,7 @@ mod tests {
         let root = unique_temp_dir("flash_worker_fatal");
         let mut host = test_host();
         host.flash_taskbar = record_flash;
-        let mut app = App::bootstrap(outcome(false, root.clone()), host).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), host).expect("bootstrap");
         pick_complete_path(&mut app);
 
         run::start_download_with(&mut app, failing_download_stage).expect("spawn the worker");
@@ -3278,7 +3225,7 @@ mod tests {
         let root = unique_temp_dir("flash_failure");
         let mut host = test_host();
         host.flash_taskbar = fail_flash;
-        let mut app = App::bootstrap(outcome(false, root.clone()), host).expect("bootstrap");
+        let mut app = choices_app(outcome(false, root.clone()), host).expect("bootstrap");
         pick_complete_path(&mut app);
         app.handle(Event::ConfirmChoices).expect("confirm");
         let (tx, rx) = mpsc::channel();

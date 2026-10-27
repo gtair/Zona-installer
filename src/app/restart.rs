@@ -172,7 +172,6 @@ mod tests {
         _mode: &RootMode,
         _new_exe: &Path,
         _old_dir: &Path,
-        _launcher: bool,
     ) -> Result<SpawnOutcome> {
         Ok(SpawnOutcome::Disabled)
     }
@@ -204,7 +203,6 @@ mod tests {
             mode: RootMode::Shipped,
             install_root,
             needs_relocation: false,
-            launcher: false,
             debug: crate::preflight::DebugOptions::default(),
         }
     }
@@ -261,6 +259,7 @@ mod tests {
         let mut host = test_host();
         host.start_install = recording_install;
         let mut app = App::bootstrap(outcome(root.clone()), host).expect("bootstrap");
+        app.handle(Event::LaunchInstaller).expect("launch installer");
 
         // Pick the complete install_zona -> sss23 -> bhs_hud path: four steps
         // apply, and Confirm is enabled.
@@ -362,6 +361,7 @@ mod tests {
         let mut host = test_host();
         host.start_install = extracting_install;
         let mut app = App::bootstrap(outcome(root.clone()), host).expect("bootstrap");
+        app.handle(Event::LaunchInstaller).expect("launch installer");
 
         app.handle(toggle("install_zona", true)).expect("branch");
         app.handle(toggle("sss23", true)).expect("level");

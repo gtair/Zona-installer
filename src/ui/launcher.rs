@@ -1,5 +1,5 @@
 //! The launcher screen: three choices shown when the installer starts from its
-//! canonical home with `--launcher`.
+//! canonical home.
 //!
 //! Data-only renderer: it reads `Phase::Launcher { game_present }` and forwards
 //! `Event::LaunchInstaller` / `Event::LaunchMo2` / `Event::LaunchZona`. The MO2

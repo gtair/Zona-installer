@@ -21,7 +21,6 @@ use eframe::egui;
 /// bottom edge regardless of the active phase's content height.
 pub fn footer(ui: &mut egui::Ui) {
     ui.add_space(4.0);
-    ui.separator();
     ui.horizontal_wrapped(|ui| {
         ui.label("S.T.A.L.K.E.R. Zona windows installer. Made by");
         ui.hyperlink_to("Gtair", "https://github.com/gtair");

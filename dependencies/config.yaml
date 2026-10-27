@@ -1,5 +1,5 @@
 version: 1
-current_version: "v1.1.0"
+current_version: "{{VERSION}}"
 github_repo: "gtair/Zona-installer"
 
 

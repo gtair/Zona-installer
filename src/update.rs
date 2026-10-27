@@ -140,13 +140,10 @@ fn parse_release(json: &str) -> Option<Release> {
 
 /// The relaunch flags to preserve through a self-update (pure).
 ///
-/// Keeps `--launcher` and the debug flags. `/delete` is consumed earlier by
-/// preflight and deliberately not forwarded.
-pub fn relaunch_args(launcher: bool, debug: DebugOptions) -> Vec<OsString> {
+/// Keeps the debug flags. `/delete` is consumed earlier by preflight and
+/// deliberately not forwarded.
+pub fn relaunch_args(debug: DebugOptions) -> Vec<OsString> {
     let mut args = Vec::new();
-    if launcher {
-        args.push(OsString::from(crate::preflight::LAUNCHER_FLAG));
-    }
     if debug.debug_console && debug.log_debug {
         args.push(OsString::from("--debug"));
     } else {
@@ -162,8 +159,8 @@ pub fn relaunch_args(launcher: bool, debug: DebugOptions) -> Vec<OsString> {
 
 /// Joins the relaunch flags into one space-separated string for the script's
 /// `-Relaunch` argument (pure). All flags are space-free, so the join is safe.
-pub fn relaunch_args_string(launcher: bool, debug: DebugOptions) -> String {
-    relaunch_args(launcher, debug)
+pub fn relaunch_args_string(debug: DebugOptions) -> String {
+    relaunch_args(debug)
         .iter()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
@@ -209,7 +206,6 @@ fn spawn_update(exe_dir: &Path, release: &Release, relaunch: &str) -> Result<()>
 /// hand-off — all of which let the installer continue normally).
 pub fn maybe_self_update(
     exe_dir: &Path,
-    launcher: bool,
     debug: DebugOptions,
     current_version: &str,
     repo: &str,
@@ -230,7 +226,7 @@ pub fn maybe_self_update(
         "update available: {current_version} -> {}",
         release.tag
     );
-    let relaunch = relaunch_args_string(launcher, debug);
+    let relaunch = relaunch_args_string(debug);
     match spawn_update(exe_dir, &release, &relaunch) {
         Ok(()) => true,
         Err(error) => {
@@ -295,31 +291,22 @@ mod tests {
     }
 
     #[test]
-    fn relaunch_args_preserves_the_launcher_and_debug_flags() {
+    fn relaunch_args_preserves_the_debug_flags() {
         let none = DebugOptions::default();
-        assert_eq!(relaunch_args(false, none), Vec::<OsString>::new());
-
-        let launcher = DebugOptions::default();
-        assert_eq!(
-            relaunch_args(true, launcher),
-            vec![OsString::from("--launcher")]
-        );
+        assert_eq!(relaunch_args(none), Vec::<OsString>::new());
 
         let both = DebugOptions {
             debug_console: true,
             log_debug: true,
         };
-        assert_eq!(
-            relaunch_args(false, both),
-            vec![OsString::from("--debug")]
-        );
+        assert_eq!(relaunch_args(both), vec![OsString::from("--debug")]);
 
         let split = DebugOptions {
             debug_console: true,
             log_debug: false,
         };
         assert_eq!(
-            relaunch_args(false, split),
+            relaunch_args(split),
             vec![OsString::from("--debug-console")]
         );
     }
@@ -330,10 +317,7 @@ mod tests {
             debug_console: true,
             log_debug: false,
         };
-        assert_eq!(
-            relaunch_args_string(true, debug),
-            "--launcher --debug-console"
-        );
-        assert_eq!(relaunch_args_string(false, DebugOptions::default()), "");
+        assert_eq!(relaunch_args_string(debug), "--debug-console");
+        assert_eq!(relaunch_args_string(DebugOptions::default()), "");
     }
 }

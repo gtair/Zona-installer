@@ -105,7 +105,7 @@ fn draw_screen(ui: &mut egui::Ui, view: &ViewModel, events: &mut Vec<Event>) {
         Phase::Downloading => ui::download::draw(ui, view, events),
         Phase::Installing | Phase::VerifyGame => ui::install::draw(ui, view, events),
         Phase::Finished => ui::finish::draw(ui, view, events),
-        // Launcher: the three-option window shown for a `--launcher` start.
+        // Launcher: the three-option window shown at a canonical start.
         Phase::Launcher { .. } => ui::launcher::draw(ui, view, events),
         // Relocation: the drive picker and the "Zona already exists" prompt.
         Phase::Relocation { .. } | Phase::RelocationTargetExists { .. } => {

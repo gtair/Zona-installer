@@ -412,7 +412,6 @@ mod tests {
         _mode: &RootMode,
         _new_exe: &Path,
         _old_dir: &Path,
-        _launcher: bool,
     ) -> Result<SpawnOutcome> {
         Ok(SpawnOutcome::Disabled)
     }
@@ -461,16 +460,18 @@ mod tests {
     }
 
     /// Builds an `App` without the real pre-flight (needs no relocation, so it
-    /// enters `Choices` with the tiny single-leaf config).
+    /// opens the launcher; advance it into `Choices` with the tiny single-leaf
+    /// config).
     fn app_with(host: Host) -> App {
         let outcome = PreflightOutcome {
             mode: RootMode::Shipped,
             install_root: PathBuf::from(r"C:\Zona\installer"),
             needs_relocation: false,
-            launcher: false,
             debug: crate::preflight::DebugOptions::default(),
         };
-        App::bootstrap(outcome, host).expect("bootstrap app")
+        let mut app = App::bootstrap(outcome, host).expect("bootstrap app");
+        app.handle(Event::LaunchInstaller).expect("enter the installer");
+        app
     }
 
     /// A fake download worker driven through the same `start_worker` seam the
