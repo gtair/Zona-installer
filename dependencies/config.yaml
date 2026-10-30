@@ -146,6 +146,12 @@ assets:
     sha256: "1748501A20CD92C332BC198E7A3D5401ED2015F344372122957A0C8894608244"
     choice: bhs_hud
 
+  - id: download_modlist_correct_bhs
+    file: modlist.txt.template
+    url: https://github.com/gtair/filehost-1/releases/download/v1.38/modlist.txt.template
+    sha256: "823E79D0AB2CABDB6E8DBD432C6496AFE7FA1664FA1D2E11C4D525916B963572"
+    choice: bhs_hud
+
   - id: download_ModOrganizer.ini.template
     file: ModOrganizer.ini.template
     url: https://github.com/gtair/filehost-1/releases/download/v1.38/ModOrganizer.ini.template
@@ -224,6 +230,14 @@ steps:
     target: "../mo2/ModOrganizer.ini"
     replacements:
       PROFILE_NAME: "ZONA V1.38 SSS23.5 (High Graphics)"
+
+  - name: correct_modlist
+    action: template_fill
+    choice: bhs_hud
+    source: "downloads/modlist.txt.template"
+    target: "../mo2/profiles/ZONA V1.38 SSS23.5 (High Graphics)/modlist.txt"
+    replacements:
+      MEDIK_ENABLED: "-"
 
   - name: delete_mo2_profile_sss21
     action: delete
