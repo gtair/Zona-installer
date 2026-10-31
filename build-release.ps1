@@ -1,3 +1,8 @@
+param(
+    # Optional PGP key id/fingerprint to sign the release zip with.
+    [string]$SignKey = ""
+)
+
 $version = Read-Host "Enter version (e.g., v0.0.0)"
 if ([string]::IsNullOrWhiteSpace($version)) {
     Write-Error "Version cannot be empty."
@@ -9,6 +14,13 @@ $releaseDir = Join-Path $ProjectRoot "release"
 
 if (-not (Test-Path $releaseDir)) {
     New-Item -ItemType Directory -Path $releaseDir | Out-Null
+}
+
+# The update helper embeds this key at compile time, so it must exist before
+# the build. Export it with: gpg --armor --export <keyid> > dependencies\public-key.asc
+$publicKey = Join-Path $ProjectRoot "dependencies\public-key.asc"
+if (-not (Test-Path $publicKey)) {
+    Write-Warning "dependencies\public-key.asc is missing; the update helper will refuse to verify releases."
 }
 
 Push-Location $ProjectRoot
@@ -28,10 +40,12 @@ if (Test-Path $installerDir) {
 New-Item -ItemType Directory -Path "$installerDir\dependencies" | Out-Null
 
 $sourceExe = Join-Path $ProjectRoot "target\release\zona-installer.exe"
+$updateExe = Join-Path $ProjectRoot "target\release\update.exe"
 $sourceDeps = Join-Path $ProjectRoot "dependencies\*"
 
 Copy-Item $sourceExe -Destination "$installerDir\"
-Copy-Item $sourceDeps -Destination "$installerDir\dependencies\" -Recurse
+Copy-Item $updateExe -Destination "$installerDir\dependencies\"
+Copy-Item $sourceDeps -Destination "$installerDir\dependencies\" -Recurse -Exclude "public-key.asc"
 
 $configFile = Join-Path "$installerDir\dependencies" "config.yaml"
 if (Test-Path $configFile) {
@@ -46,5 +60,18 @@ if (Test-Path $zipName) {
     Remove-Item $zipName
 }
 Compress-Archive -Path $installerDir -DestinationPath $zipName
+
+if ($SignKey) {
+    $sigPath = "$zipName.asc"
+    if (Test-Path $sigPath) {
+        Remove-Item $sigPath
+    }
+    & gpg --armor --detach-sign --local-user $SignKey --output $sigPath $zipName
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "gpg signing failed."
+        exit 1
+    }
+    Write-Host "Signed: $sigPath" -ForegroundColor Cyan
+}
 
 Write-Host "Success! Created $zipName" -ForegroundColor Green

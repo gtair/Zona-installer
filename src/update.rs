@@ -1,18 +1,19 @@
 //! Self-update: check for a newer GitHub release and hand off to the bundled
-//! PowerShell update script.
+//! `update.exe` helper.
 //!
 //! The check runs only from a canonical shipped install (post-relocation). When
-//! a strictly newer release tag exists, the installer spawns
-//! `dependencies\update.ps1`, which waits for this process to exit (releasing
-//! the running exe's lock), downloads the release zip into `installer\downloads\`,
-//! extracts it over `<drive>:\Zona`, and relaunches the new installer with the
-//! original flags. The console window the script opens is the "updating" UI —
-//! there is no in-app spinner.
+//! a strictly newer release tag exists, the installer copies
+//! `dependencies\update.exe` to a temp directory and spawns that copy, which
+//! waits for this process to exit (releasing the running exe's lock), downloads
+//! the release zip and its detached OpenPGP signature, verifies the signature
+//! against the embedded public key, extracts the zip over `<drive>:\Zona`, and
+//! relaunches the new installer with the original flags. The console window the
+//! helper opens is the "updating" UI — there is no in-app spinner.
 //!
 //! The version comparison lives here (the configured version against the
-//! release tag, both normalized by stripping a leading `v`); the download and
-//! extract are delegated to PowerShell so a ~5MB update needs no bundled HTTP
-//! or archive tooling.
+//! release tag, both normalized by stripping a leading `v`); the download,
+//! verification, and extraction are delegated to `update.exe` so a ~5MB update
+//! needs no bundled HTTP or archive tooling in the GUI binary.
 
 use std::cmp::Ordering;
 use std::ffi::OsString;
@@ -25,8 +26,8 @@ use crate::preflight::DebugOptions;
 /// The User-Agent GitHub requires on API requests.
 const USER_AGENT: &str = "zona-installer";
 
-/// The bundled update script, relative to `dependencies\`.
-const UPDATE_SCRIPT: &str = "update.ps1";
+/// The bundled update helper, relative to `dependencies\`.
+const UPDATE_EXE: &str = "update.exe";
 
 /// Strips a single leading `v`/`V` from a version tag (pure).
 pub fn strip_v(version: &str) -> &str {
@@ -85,19 +86,22 @@ fn compare_segment(a: &str, b: &str) -> Ordering {
     }
 }
 
-/// One usable release: its tag and the `.zip` asset URL to download.
+/// One usable release: its tag, the `.zip` asset URL, and the detached
+/// signature asset URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Release {
     tag: String,
     zip_url: String,
+    sig_url: String,
 }
 
-/// Fetches the latest release and its `.zip` asset (impure, best effort).
+/// Fetches the latest release and its `.zip` + signature assets (impure, best
+/// effort).
 ///
 /// `repo` is the `owner/repo` to query. A network or parse failure is treated
 /// as "no update", never a fatal error: the caller simply proceeds with the
-/// normal flow. Returns `None` when the check cannot complete or no `.zip`
-/// asset exists.
+/// normal flow. Returns `None` when the check cannot complete or no signed
+/// `.zip` asset pair exists.
 pub(crate) fn check_for_update(repo: &str) -> Option<Release> {
     let url = format!("https://api.github.com/repos/{repo}/releases/latest");
     let mut response = match ureq::get(&url).header("User-Agent", USER_AGENT).call() {
@@ -117,25 +121,58 @@ pub(crate) fn check_for_update(repo: &str) -> Option<Release> {
     match parse_release(&body) {
         Some(release) => Some(release),
         None => {
-            log::warn!(target: "update", "no .zip asset in the latest release");
+            log::warn!(target: "update", "no signed .zip asset in the latest release");
             None
         }
     }
 }
 
-/// Parses a GitHub `releases/latest` JSON body into its tag and `.zip` asset
-/// URL (pure).
+/// Parses a GitHub `releases/latest` JSON body into its tag, `.zip` asset URL,
+/// and the detached signature asset URL (pure).
+///
+/// The signature asset is the `.asc` whose name is the zip asset's name plus
+/// `.asc`; when that exact name is absent, any `.asc` asset is accepted. When
+/// no matching signature exists the release is rejected (fail closed: an
+/// unsigned zip is not updatable).
 fn parse_release(json: &str) -> Option<Release> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
     let tag = value.get("tag_name")?.as_str()?.to_string();
-    let zip_url = value
+
+    let assets: Vec<(&str, &str)> = value
         .get("assets")?
         .as_array()?
         .iter()
-        .filter_map(|asset| asset.get("browser_download_url")?.as_str())
-        .find(|url| url.to_ascii_lowercase().ends_with(".zip"))?
+        .filter_map(|asset| {
+            let name = asset.get("name")?.as_str()?;
+            let url = asset.get("browser_download_url")?.as_str()?;
+            Some((name, url))
+        })
+        .collect();
+
+    let zip_name = assets
+        .iter()
+        .map(|(name, _)| *name)
+        .find(|name| name.to_ascii_lowercase().ends_with(".zip"))?;
+
+    let zip_url = assets
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(zip_name))
+        .map(|(_, url)| *url)?
         .to_string();
-    Some(Release { tag, zip_url })
+
+    let sig_name = format!("{zip_name}.asc");
+    let sig_url = assets
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(&sig_name))
+        .or_else(|| {
+            assets
+                .iter()
+                .find(|(name, _)| name.to_ascii_lowercase().ends_with(".asc"))
+        })
+        .map(|(_, url)| *url)?
+        .to_string();
+
+    Some(Release { tag, zip_url, sig_url })
 }
 
 /// The relaunch flags to preserve through a self-update (pure).
@@ -157,7 +194,7 @@ pub fn relaunch_args(debug: DebugOptions) -> Vec<OsString> {
     args
 }
 
-/// Joins the relaunch flags into one space-separated string for the script's
+/// Joins the relaunch flags into one space-separated string for the helper's
 /// `-Relaunch` argument (pure). All flags are space-free, so the join is safe.
 pub fn relaunch_args_string(debug: DebugOptions) -> String {
     relaunch_args(debug)
@@ -167,30 +204,45 @@ pub fn relaunch_args_string(debug: DebugOptions) -> String {
         .join(" ")
 }
 
-/// Spawns the update script and returns once it has started (impure).
+/// Copies the update helper to a temp directory and spawns it (impure).
 ///
-/// The caller must exit immediately after this so the script's wait on the
-/// process id succeeds and the exe lock is released.
+/// The copy runs from temp so extracting the release zip over the install
+/// directory never tries to overwrite the running helper (Windows and Wine lock
+/// running executables). The caller must exit immediately after this so the
+/// helper's wait on the process id succeeds and the exe lock is released.
 fn spawn_update(exe_dir: &Path, release: &Release, relaunch: &str) -> Result<()> {
-    let script = exe_dir.join("dependencies").join(UPDATE_SCRIPT);
+    let update_exe = exe_dir.join("dependencies").join(UPDATE_EXE);
     let zona = exe_dir.parent().unwrap_or(exe_dir);
 
-    let mut command = Command::new("powershell.exe");
+    let temp_dir = std::env::temp_dir().join(format!("zona-installer-update-{}", std::process::id()));
+    let temp_exe = temp_dir.join(UPDATE_EXE);
+    std::fs::create_dir_all(&temp_dir).map_err(|source| AppError::Io {
+        context: "create update helper temp dir".to_string(),
+        path: Some(temp_dir.clone()),
+        source,
+    })?;
+    std::fs::copy(&update_exe, &temp_exe).map_err(|source| AppError::Io {
+        context: "copy update helper to temp".to_string(),
+        path: Some(update_exe),
+        source,
+    })?;
+
+    let mut command = Command::new(&temp_exe);
     command
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&script)
         .arg("-InstallerPid")
         .arg(std::process::id().to_string())
         .arg("-Url")
         .arg(&release.zip_url)
+        .arg("-SigUrl")
+        .arg(&release.sig_url)
         .arg("-Dest")
         .arg(zona)
         .arg("-Relaunch")
         .arg(relaunch);
 
     command.spawn().map_err(|source| AppError::Io {
-        context: "spawn update script".to_string(),
-        path: Some(script),
+        context: "spawn update helper".to_string(),
+        path: Some(temp_exe),
         source,
     })?;
     Ok(())
@@ -201,7 +253,7 @@ fn spawn_update(exe_dir: &Path, release: &Release, relaunch: &str) -> Result<()>
 /// `current_version` is the installer version to compare against and `repo` is
 /// the GitHub `owner/repo` to query, both read from `config.yaml`.
 ///
-/// Returns `true` when an update was handed off to the script and the caller
+/// Returns `true` when an update was handed off to the helper and the caller
 /// must exit immediately; `false` otherwise (no update, offline, or a failed
 /// hand-off — all of which let the installer continue normally).
 pub fn maybe_self_update(
@@ -268,24 +320,40 @@ mod tests {
     }
 
     #[test]
-    fn parse_release_extracts_the_tag_and_zip_asset() {
+    fn parse_release_extracts_the_tag_and_zip_and_sig_assets() {
         let json = r#"{
             "tag_name": "v0.3.0",
             "assets": [
-                { "browser_download_url": "https://example.com/SHA256SUMS" },
-                { "browser_download_url": "https://example.com/zona-installer.zip" }
+                { "name": "SHA256SUMS", "browser_download_url": "https://example.com/SHA256SUMS" },
+                { "name": "zona-installer.zip", "browser_download_url": "https://example.com/zona-installer.zip" },
+                { "name": "zona-installer.zip.asc", "browser_download_url": "https://example.com/zona-installer.zip.asc" }
             ]
         }"#;
         let release = parse_release(json).expect("parse release");
         assert_eq!(release.tag, "v0.3.0");
         assert_eq!(release.zip_url, "https://example.com/zona-installer.zip");
+        assert_eq!(release.sig_url, "https://example.com/zona-installer.zip.asc");
     }
 
     #[test]
     fn parse_release_rejects_a_body_without_a_zip_asset() {
         let json = r#"{
             "tag_name": "v0.3.0",
-            "assets": [{ "browser_download_url": "https://example.com/SHA256SUMS" }]
+            "assets": [
+                { "name": "SHA256SUMS", "browser_download_url": "https://example.com/SHA256SUMS" },
+                { "name": "zona-installer.zip.asc", "browser_download_url": "https://example.com/zona-installer.zip.asc" }
+            ]
+        }"#;
+        assert!(parse_release(json).is_none());
+    }
+
+    #[test]
+    fn parse_release_rejects_a_zip_without_a_signature() {
+        let json = r#"{
+            "tag_name": "v0.3.0",
+            "assets": [
+                { "name": "zona-installer.zip", "browser_download_url": "https://example.com/zona-installer.zip" }
+            ]
         }"#;
         assert!(parse_release(json).is_none());
     }
