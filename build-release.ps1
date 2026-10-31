@@ -16,8 +16,9 @@ if (-not (Test-Path $releaseDir)) {
     New-Item -ItemType Directory -Path $releaseDir | Out-Null
 }
 
-# The update helper embeds this key at compile time, so it must exist before
-# the build. Export it with: gpg --armor --export <keyid> > dependencies\public-key.asc
+# The update helper verifies releases against this key at runtime, and the file
+# is shipped inside the release zip. Export it with:
+#   gpg --armor --export <keyid> > dependencies\public-key.asc
 $publicKey = Join-Path $ProjectRoot "dependencies\public-key.asc"
 if (-not (Test-Path $publicKey)) {
     Write-Warning "dependencies\public-key.asc is missing; the update helper will refuse to verify releases."
@@ -45,7 +46,7 @@ $sourceDeps = Join-Path $ProjectRoot "dependencies\*"
 
 Copy-Item $sourceExe -Destination "$installerDir\"
 Copy-Item $updateExe -Destination "$installerDir\dependencies\"
-Copy-Item $sourceDeps -Destination "$installerDir\dependencies\" -Recurse -Exclude "public-key.asc"
+Copy-Item $sourceDeps -Destination "$installerDir\dependencies\" -Recurse
 
 $configFile = Join-Path "$installerDir\dependencies" "config.yaml"
 if (Test-Path $configFile) {

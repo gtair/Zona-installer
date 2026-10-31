@@ -9,12 +9,13 @@
 //!
 //! Invoked as:
 //!   update.exe -InstallerPid <pid> -Url <zip-url> -SigUrl <sig-url> \
-//!              -NotesFile <path> -Dest <zona-dir> -Relaunch "<flags>"
+//!              -KeyFile <public-key.asc> -NotesFile <path> -Dest <zona-dir> \
+//!              -Relaunch "<flags>"
 //!
 //! It waits for the old installer to exit (releasing its exe lock), downloads
 //! the release zip and its detached OpenPGP signature, verifies the signature
-//! against the embedded public key, extracts the zip over `-Dest`, verifies the
-//! new installer exists, and relaunches it with the stored flags.
+//! against the public key read from `-KeyFile`, extracts the zip over `-Dest`,
+//! verifies the new installer exists, and relaunches it with the stored flags.
 
 use std::env;
 use std::ffi::OsString;
@@ -29,9 +30,6 @@ use windows_sys::Win32::System::Threading::{
 
 /// The User-Agent GitHub requires on asset requests.
 const USER_AGENT: &str = "zona-installer";
-
-/// The armored public key embedded at compile time (`dependencies/public-key.asc`).
-const PUBLIC_KEY: &[u8] = include_bytes!("../../dependencies/public-key.asc");
 
 /// Cap downloads at 50MB (the release zip is ~5MB) to avoid unbounded reads.
 const DOWNLOAD_LIMIT: u64 = 50 * 1024 * 1024;
@@ -61,6 +59,7 @@ struct Args {
     url: String,
     sig_url: String,
     notes_file: Option<PathBuf>,
+    key_file: PathBuf,
     dest: PathBuf,
     relaunch: String,
 }
@@ -71,6 +70,7 @@ fn parse_args(raw: Vec<OsString>) -> Result<Args, String> {
     let mut url: Option<String> = None;
     let mut sig_url: Option<String> = None;
     let mut notes_file: Option<PathBuf> = None;
+    let mut key_file: Option<PathBuf> = None;
     let mut dest: Option<PathBuf> = None;
     let mut relaunch = String::new();
 
@@ -93,6 +93,7 @@ fn parse_args(raw: Vec<OsString>) -> Result<Args, String> {
             "-url" => url = Some(value()?),
             "-sigurl" => sig_url = Some(value()?),
             "-notesfile" => notes_file = Some(PathBuf::from(value()?)),
+            "-keyfile" => key_file = Some(PathBuf::from(value()?)),
             "-dest" => dest = Some(PathBuf::from(value()?)),
             "-relaunch" => relaunch = value()?,
             other => return Err(format!("unknown argument: {other}")),
@@ -104,6 +105,7 @@ fn parse_args(raw: Vec<OsString>) -> Result<Args, String> {
         url: url.ok_or_else(|| "-Url is required".to_string())?,
         sig_url: sig_url.ok_or_else(|| "-SigUrl is required".to_string())?,
         notes_file,
+        key_file: key_file.ok_or_else(|| "-KeyFile is required".to_string())?,
         dest: dest.ok_or_else(|| "-Dest is required".to_string())?,
         relaunch,
     })
@@ -128,7 +130,9 @@ fn run(args: &Args) -> Result<(), String> {
 
     // 3. Verify the signature before touching anything on disk.
     println!("Verifying signature...");
-    verify_signature(&signature, &zip)?;
+    let public_key = std::fs::read(&args.key_file)
+        .map_err(|e| format!("could not read public key {}: {e}", args.key_file.display()))?;
+    verify_signature(&public_key, &signature, &zip)?;
 
     // 4. Extract over the Zona directory. The old exe is gone and this helper
     //    runs from temp, so nothing under the install dir is locked.
@@ -213,9 +217,9 @@ impl Drop for HandleGuard {
 }
 
 /// Verifies `signature` is a valid detached OpenPGP signature over `data`,
-/// made by the key in [`PUBLIC_KEY`].
-fn verify_signature(signature: &[u8], data: &[u8]) -> Result<(), String> {
-    verify_signature_with_key(PUBLIC_KEY, signature, data)
+/// made by the key in `public_key` (read from `-KeyFile`).
+fn verify_signature(public_key: &[u8], signature: &[u8], data: &[u8]) -> Result<(), String> {
+    verify_signature_with_key(public_key, signature, data)
 }
 
 /// Verifies a detached OpenPGP signature with an explicit public key (pure
@@ -228,7 +232,7 @@ fn verify_signature_with_key(public_key: &[u8], signature: &[u8], data: &[u8]) -
     use openpgp::Cert;
 
     let cert = Cert::from_bytes(public_key)
-        .map_err(|e| format!("embedded signing key is invalid: {e}"))?;
+        .map_err(|e| format!("public key is invalid: {e}"))?;
 
     struct Helper {
         cert: Cert,
@@ -250,7 +254,7 @@ fn verify_signature_with_key(public_key: &[u8], signature: &[u8], data: &[u8]) -
             } else {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "signature does not verify against the embedded public key",
+                    "signature does not verify against the public key",
                 )
                 .into())
             }
@@ -304,6 +308,7 @@ mod tests {
             "-Url", "https://example.com/zona-installer.zip",
             "-SigUrl", "https://example.com/zona-installer.zip.asc",
             "-NotesFile", r"C:\Temp\release-notes.txt",
+            "-KeyFile", r"C:\Zona\installer\dependencies\public-key.asc",
             "-Dest", r"C:\Zona",
             "-Relaunch", "--debug-console",
         ]))
@@ -315,6 +320,10 @@ mod tests {
             args.notes_file,
             Some(PathBuf::from(r"C:\Temp\release-notes.txt"))
         );
+        assert_eq!(
+            args.key_file,
+            PathBuf::from(r"C:\Zona\installer\dependencies\public-key.asc")
+        );
         assert_eq!(args.dest, PathBuf::from(r"C:\Zona"));
         assert_eq!(args.relaunch, "--debug-console");
     }
@@ -325,11 +334,16 @@ mod tests {
             "-InstallerPid", "1",
             "-Url", "https://example.com/z",
             "-SigUrl", "https://example.com/z.asc",
+            "-KeyFile", r"C:\Zona\installer\dependencies\public-key.asc",
             "-Dest", r"C:\Zona",
         ]))
         .expect("parse args");
         assert_eq!(args.relaunch, "");
         assert_eq!(args.notes_file, None);
+        assert_eq!(
+            args.key_file,
+            PathBuf::from(r"C:\Zona\installer\dependencies\public-key.asc")
+        );
     }
 
     #[test]

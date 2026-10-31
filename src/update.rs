@@ -6,7 +6,8 @@
 //! `dependencies\update.exe` to a temp directory and spawns that copy, which
 //! waits for this process to exit (releasing the running exe's lock), downloads
 //! the release zip and its detached OpenPGP signature, verifies the signature
-//! against the embedded public key, extracts the zip over `<drive>:\Zona`, and
+//! against the shipped public key (`dependencies\public-key.asc`), extracts the
+//! zip over `<drive>:\Zona`, and
 //! relaunches the new installer with the original flags. The console window the
 //! helper opens is the "updating" UI — there is no in-app spinner.
 //!
@@ -28,6 +29,11 @@ const USER_AGENT: &str = "zona-installer";
 
 /// The bundled update helper, relative to `dependencies\`.
 const UPDATE_EXE: &str = "update.exe";
+
+/// The shipped public key the helper verifies releases against, relative to
+/// `dependencies\`. Read at runtime (not embedded) so the key can be rotated
+/// without rebuilding the update helper.
+const KEY_FILE: &str = "public-key.asc";
 
 /// Strips a single leading `v`/`V` from a version tag (pure).
 pub fn strip_v(version: &str) -> &str {
@@ -219,6 +225,7 @@ pub fn relaunch_args_string(debug: DebugOptions) -> String {
 
 fn spawn_update(exe_dir: &Path, release: &Release, relaunch: &str) -> Result<()> {
     let update_exe = exe_dir.join("dependencies").join(UPDATE_EXE);
+    let key_file = exe_dir.join("dependencies").join(KEY_FILE);
     let zona = exe_dir.parent().unwrap_or(exe_dir);
 
     let temp_dir = std::env::temp_dir().join(format!("zona-installer-update-{}", std::process::id()));
@@ -248,6 +255,8 @@ fn spawn_update(exe_dir: &Path, release: &Release, relaunch: &str) -> Result<()>
     command
         .arg("-InstallerPid")
         .arg(std::process::id().to_string())
+        .arg("-KeyFile")
+        .arg(&key_file)
         .arg("-Url")
         .arg(&release.zip_url)
         .arg("-SigUrl")
