@@ -86,13 +86,15 @@ fn compare_segment(a: &str, b: &str) -> Ordering {
     }
 }
 
-/// One usable release: its tag, the `.zip` asset URL, and the detached
-/// signature asset URL.
+/// One usable release: its tag, the `.zip` asset URL, the detached signature
+/// asset URL, and the release description (the GitHub release `body`, shown in
+/// the updater's console window).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Release {
     tag: String,
     zip_url: String,
     sig_url: String,
+    description: String,
 }
 
 /// Fetches the latest release and its `.zip` + signature assets (impure, best
@@ -128,15 +130,21 @@ pub(crate) fn check_for_update(repo: &str) -> Option<Release> {
 }
 
 /// Parses a GitHub `releases/latest` JSON body into its tag, `.zip` asset URL,
-/// and the detached signature asset URL (pure).
+/// the detached signature asset URL, and the release description (pure).
 ///
 /// The signature asset is the `.asc` whose name is the zip asset's name plus
 /// `.asc`; when that exact name is absent, any `.asc` asset is accepted. When
 /// no matching signature exists the release is rejected (fail closed: an
-/// unsigned zip is not updatable).
+/// unsigned zip is not updatable). The description is the release `body`; a
+/// missing/empty body yields an empty string.
 fn parse_release(json: &str) -> Option<Release> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
     let tag = value.get("tag_name")?.as_str()?.to_string();
+    let description = value
+        .get("body")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
     let assets: Vec<(&str, &str)> = value
         .get("assets")?
@@ -172,7 +180,12 @@ fn parse_release(json: &str) -> Option<Release> {
         .map(|(_, url)| *url)?
         .to_string();
 
-    Some(Release { tag, zip_url, sig_url })
+    Some(Release {
+        tag,
+        zip_url,
+        sig_url,
+        description,
+    })
 }
 
 /// The relaunch flags to preserve through a self-update (pure).
@@ -204,12 +217,6 @@ pub fn relaunch_args_string(debug: DebugOptions) -> String {
         .join(" ")
 }
 
-/// Copies the update helper to a temp directory and spawns it (impure).
-///
-/// The copy runs from temp so extracting the release zip over the install
-/// directory never tries to overwrite the running helper (Windows and Wine lock
-/// running executables). The caller must exit immediately after this so the
-/// helper's wait on the process id succeeds and the exe lock is released.
 fn spawn_update(exe_dir: &Path, release: &Release, relaunch: &str) -> Result<()> {
     let update_exe = exe_dir.join("dependencies").join(UPDATE_EXE);
     let zona = exe_dir.parent().unwrap_or(exe_dir);
@@ -227,6 +234,16 @@ fn spawn_update(exe_dir: &Path, release: &Release, relaunch: &str) -> Result<()>
         source,
     })?;
 
+    // Write the release description to a sidecar file: it can contain spaces,
+    // newlines, quotes, and unicode, so it is not safe to pass on the command
+    // line. The helper prints it under its status header.
+    let notes_file = temp_dir.join("release-notes.txt");
+    std::fs::write(&notes_file, &release.description).map_err(|source| AppError::Io {
+        context: "write update release notes".to_string(),
+        path: Some(notes_file.clone()),
+        source,
+    })?;
+
     let mut command = Command::new(&temp_exe);
     command
         .arg("-InstallerPid")
@@ -235,6 +252,8 @@ fn spawn_update(exe_dir: &Path, release: &Release, relaunch: &str) -> Result<()>
         .arg(&release.zip_url)
         .arg("-SigUrl")
         .arg(&release.sig_url)
+        .arg("-NotesFile")
+        .arg(&notes_file)
         .arg("-Dest")
         .arg(zona)
         .arg("-Relaunch")
@@ -323,6 +342,7 @@ mod tests {
     fn parse_release_extracts_the_tag_and_zip_and_sig_assets() {
         let json = r#"{
             "tag_name": "v0.3.0",
+            "body": "Fixes the launcher shortcut.",
             "assets": [
                 { "name": "SHA256SUMS", "browser_download_url": "https://example.com/SHA256SUMS" },
                 { "name": "zona-installer.zip", "browser_download_url": "https://example.com/zona-installer.zip" },
@@ -333,6 +353,20 @@ mod tests {
         assert_eq!(release.tag, "v0.3.0");
         assert_eq!(release.zip_url, "https://example.com/zona-installer.zip");
         assert_eq!(release.sig_url, "https://example.com/zona-installer.zip.asc");
+        assert_eq!(release.description, "Fixes the launcher shortcut.");
+    }
+
+    #[test]
+    fn parse_release_accepts_a_missing_body() {
+        let json = r#"{
+            "tag_name": "v0.3.0",
+            "assets": [
+                { "name": "zona-installer.zip", "browser_download_url": "https://example.com/zona-installer.zip" },
+                { "name": "zona-installer.zip.asc", "browser_download_url": "https://example.com/zona-installer.zip.asc" }
+            ]
+        }"#;
+        let release = parse_release(json).expect("parse release");
+        assert_eq!(release.description, "");
     }
 
     #[test]

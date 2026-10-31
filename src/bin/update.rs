@@ -1,15 +1,15 @@
 //! Zona Installer self-update helper (`update.exe`).
 //!
 //! Replaces the old PowerShell `update.ps1`. It is a plain console binary with
-//! no GUI dependencies so it runs on Windows and under Wine.
+//! no GUI dependencies so it runs on Windows.
 //!
 //! The installer copies this binary to a temp directory and spawns the copy, so
 //! extracting the release zip over the install directory never tries to
-//! overwrite this running image (Windows and Wine lock running executables).
+//! overwrite this running image.
 //!
 //! Invoked as:
 //!   update.exe -InstallerPid <pid> -Url <zip-url> -SigUrl <sig-url> \
-//!              -Dest <zona-dir> -Relaunch "<flags>"
+//!              -NotesFile <path> -Dest <zona-dir> -Relaunch "<flags>"
 //!
 //! It waits for the old installer to exit (releasing its exe lock), downloads
 //! the release zip and its detached OpenPGP signature, verifies the signature
@@ -60,6 +60,7 @@ struct Args {
     installer_pid: u32,
     url: String,
     sig_url: String,
+    notes_file: Option<PathBuf>,
     dest: PathBuf,
     relaunch: String,
 }
@@ -69,6 +70,7 @@ fn parse_args(raw: Vec<OsString>) -> Result<Args, String> {
     let mut installer_pid: Option<u32> = None;
     let mut url: Option<String> = None;
     let mut sig_url: Option<String> = None;
+    let mut notes_file: Option<PathBuf> = None;
     let mut dest: Option<PathBuf> = None;
     let mut relaunch = String::new();
 
@@ -90,6 +92,7 @@ fn parse_args(raw: Vec<OsString>) -> Result<Args, String> {
             }
             "-url" => url = Some(value()?),
             "-sigurl" => sig_url = Some(value()?),
+            "-notesfile" => notes_file = Some(PathBuf::from(value()?)),
             "-dest" => dest = Some(PathBuf::from(value()?)),
             "-relaunch" => relaunch = value()?,
             other => return Err(format!("unknown argument: {other}")),
@@ -100,6 +103,7 @@ fn parse_args(raw: Vec<OsString>) -> Result<Args, String> {
         installer_pid: installer_pid.ok_or_else(|| "-InstallerPid is required".to_string())?,
         url: url.ok_or_else(|| "-Url is required".to_string())?,
         sig_url: sig_url.ok_or_else(|| "-SigUrl is required".to_string())?,
+        notes_file,
         dest: dest.ok_or_else(|| "-Dest is required".to_string())?,
         relaunch,
     })
@@ -107,6 +111,12 @@ fn parse_args(raw: Vec<OsString>) -> Result<Args, String> {
 
 fn run(args: &Args) -> Result<(), String> {
     println!("Updating Zona installer...");
+
+    // 0. Show the release description (if the installer provided one) under the
+    //    status header, before the slow download begins.
+    if let Some(notes_file) = &args.notes_file {
+        print_notes(notes_file);
+    }
 
     // 1. Wait for the old installer to fully exit, releasing its exe lock.
     wait_for_process(args.installer_pid);
@@ -134,6 +144,28 @@ fn run(args: &Args) -> Result<(), String> {
     // 6. Relaunch the new installer with the stored flags.
     println!("Launching updated installer...");
     relaunch(&new_exe, &args.relaunch)
+}
+
+/// Prints the release description from `path` under a `Release notes:` header.
+///
+/// A missing or empty file is ignored; an unreadable file is reported but does
+/// not abort the update.
+fn print_notes(path: &Path) {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => {
+            eprintln!("Could not read release notes ({}): {error}", path.display());
+            return;
+        }
+    };
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    println!();
+    println!("Release notes:");
+    println!("{text}");
+    println!();
 }
 
 fn download(url: &str) -> Result<Vec<u8>, String> {
@@ -271,6 +303,7 @@ mod tests {
             "-InstallerPid", "1234",
             "-Url", "https://example.com/zona-installer.zip",
             "-SigUrl", "https://example.com/zona-installer.zip.asc",
+            "-NotesFile", r"C:\Temp\release-notes.txt",
             "-Dest", r"C:\Zona",
             "-Relaunch", "--debug-console",
         ]))
@@ -278,6 +311,10 @@ mod tests {
         assert_eq!(args.installer_pid, 1234);
         assert_eq!(args.url, "https://example.com/zona-installer.zip");
         assert_eq!(args.sig_url, "https://example.com/zona-installer.zip.asc");
+        assert_eq!(
+            args.notes_file,
+            Some(PathBuf::from(r"C:\Temp\release-notes.txt"))
+        );
         assert_eq!(args.dest, PathBuf::from(r"C:\Zona"));
         assert_eq!(args.relaunch, "--debug-console");
     }
@@ -292,6 +329,7 @@ mod tests {
         ]))
         .expect("parse args");
         assert_eq!(args.relaunch, "");
+        assert_eq!(args.notes_file, None);
     }
 
     #[test]
