@@ -17,15 +17,27 @@ if (-not (Test-Path $releaseDir)) {
 }
 
 # The update helper verifies releases against this key at runtime, and the file
-# is shipped inside the release zip. Export it with:
-#   gpg --armor --export <keyid> > dependencies\public-key.asc
+# is shipped inside the release zip. Export it with gpg's --output (NOT a
+# PowerShell `>` redirect, which would write UTF-16 and break parsing):
+#   gpg --armor --export --output dependencies\public-key.asc <keyid>
 $publicKey = Join-Path $ProjectRoot "dependencies\public-key.asc"
 if (-not (Test-Path $publicKey)) {
     Write-Warning "dependencies\public-key.asc is missing; the update helper will refuse to verify releases."
 }
 
+# update.exe is pinned: built once and re-shipped byte-identical every release so
+# its SHA-256 (and the Defender/SmartScreen whitelist) stays stable. It is NOT
+# rebuilt here. If src\bin\update.rs changes, rebuild it manually
+# (cargo build --release --bin update), copy the new binary here, and resubmit
+# the new hash to Microsoft.
+$pinnedUpdateExe = Join-Path $ProjectRoot "release\builds\update.exe"
+if (-not (Test-Path $pinnedUpdateExe)) {
+    Write-Error "Pinned update.exe is missing at release\builds\update.exe. Build it once and copy it there."
+    exit 1
+}
+
 Push-Location $ProjectRoot
-cargo build --release
+cargo build --release --bin zona-installer
 $buildExitCode = $LASTEXITCODE
 Pop-Location
 
@@ -41,7 +53,7 @@ if (Test-Path $installerDir) {
 New-Item -ItemType Directory -Path "$installerDir\dependencies" | Out-Null
 
 $sourceExe = Join-Path $ProjectRoot "target\release\zona-installer.exe"
-$updateExe = Join-Path $ProjectRoot "target\release\update.exe"
+$updateExe = $pinnedUpdateExe
 $sourceDeps = Join-Path $ProjectRoot "dependencies\*"
 
 Copy-Item $sourceExe -Destination "$installerDir\"
@@ -76,3 +88,14 @@ if ($SignKey) {
 }
 
 Write-Host "Success! Created $zipName" -ForegroundColor Green
+
+Write-Host ""
+Write-Host "SHA-256 (for Microsoft Threat Intelligence submission):" -ForegroundColor Cyan
+$shippedUpdate = Join-Path $installerDir "dependencies\update.exe"
+$shippedInstaller = Join-Path $installerDir "zona-installer.exe"
+if (Test-Path $shippedUpdate) {
+    Write-Host ("  update.exe        " + (Get-FileHash $shippedUpdate -Algorithm SHA256).Hash)
+}
+if (Test-Path $shippedInstaller) {
+    Write-Host ("  zona-installer.exe " + (Get-FileHash $shippedInstaller -Algorithm SHA256).Hash)
+}

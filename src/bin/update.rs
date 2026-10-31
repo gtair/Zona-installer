@@ -19,7 +19,7 @@
 
 use std::env;
 use std::ffi::OsString;
-use std::io::Cursor;
+use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -41,6 +41,15 @@ fn main() {
     match parse_args(env::args_os().skip(1).collect()) {
         Err(message) => fail(&message),
         Ok(args) => {
+            log(&format!(
+                "update started: pid={} url={} sig={} key={} dest={} relaunch={:?}",
+                args.installer_pid,
+                args.url,
+                args.sig_url,
+                args.key_file.display(),
+                args.dest.display(),
+                args.relaunch
+            ));
             if let Err(message) = run(&args) {
                 fail(&message);
             }
@@ -50,7 +59,30 @@ fn main() {
 
 fn fail(message: &str) -> ! {
     eprintln!("Update failed: {message}");
+    log(&format!("Update failed: {message}"));
+    eprintln!();
+    eprintln!("Press Enter to close this window...");
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
     std::process::exit(1);
+}
+
+/// Log file every run appends to, so a failure stays readable after the
+/// console closes (`%TEMP%\zona-installer-update.log`).
+fn log_path() -> PathBuf {
+    std::env::temp_dir().join("zona-installer-update.log")
+}
+
+/// Appends one line to the update log (best effort: logging must never fail
+/// the update itself).
+fn log(message: &str) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path())
+    {
+        let _ = writeln!(file, "{message}");
+    }
 }
 
 #[derive(Debug)]
@@ -127,17 +159,20 @@ fn run(args: &Args) -> Result<(), String> {
     println!("Downloading update...");
     let zip = download(&args.url)?;
     let signature = download(&args.sig_url)?;
+    log("downloaded zip and signature");
 
     // 3. Verify the signature before touching anything on disk.
     println!("Verifying signature...");
     let public_key = std::fs::read(&args.key_file)
         .map_err(|e| format!("could not read public key {}: {e}", args.key_file.display()))?;
     verify_signature(&public_key, &signature, &zip)?;
+    log("signature verified");
 
     // 4. Extract over the Zona directory. The old exe is gone and this helper
     //    runs from temp, so nothing under the install dir is locked.
     println!("Extracting...");
     extract_zip(&zip, &args.dest)?;
+    log(&format!("extracted to {}", args.dest.display()));
 
     // 5. Verify the new installer exists before launching it.
     let new_exe = args.dest.join(NEW_EXE);
@@ -147,7 +182,9 @@ fn run(args: &Args) -> Result<(), String> {
 
     // 6. Relaunch the new installer with the stored flags.
     println!("Launching updated installer...");
-    relaunch(&new_exe, &args.relaunch)
+    relaunch(&new_exe, &args.relaunch)?;
+    log(&format!("relaunched {}", new_exe.display()));
+    Ok(())
 }
 
 /// Prints the release description from `path` under a `Release notes:` header.
