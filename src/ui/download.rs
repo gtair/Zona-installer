@@ -172,6 +172,39 @@ fn draw_file_row(ui: &mut egui::Ui, row: &DownloadRow) {
     draw_bar(ui, row, fraction(row));
 }
 
+/// A compact, clickable triangle arrow for toggling a multipart row.
+///
+/// The text glyphs `▾`/`▸` are not in egui's bundled fonts, so they render as a
+/// tofu box. The triangle is drawn as a vector shape instead, the same way
+/// `egui::CollapsingHeader` paints its own collapse icon.
+fn collapse_toggle(ui: &mut egui::Ui, is_open: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact(&response);
+        let points = if is_open {
+            // Pointing down.
+            vec![
+                rect.left_top() + egui::vec2(3.0, 3.0),
+                rect.right_top() + egui::vec2(-3.0, 3.0),
+                rect.center_bottom() + egui::vec2(0.0, -3.0),
+            ]
+        } else {
+            // Pointing right.
+            vec![
+                rect.left_top() + egui::vec2(3.0, 3.0),
+                rect.right_center() + egui::vec2(-3.0, 0.0),
+                rect.left_bottom() + egui::vec2(3.0, -3.0),
+            ]
+        };
+        ui.painter().add(egui::Shape::convex_polygon(
+            points,
+            visuals.fg_stroke.color,
+            egui::Stroke::NONE,
+        ));
+    }
+    response
+}
+
 /// Draws one split-archive row: a header (toggle + archive name + status badge),
 /// the overall bar at full width, then the collapsible per-part sub-lines
 /// indented once.
@@ -199,8 +232,7 @@ fn draw_multipart_row(ui: &mut egui::Ui, stem: &str, parts: &[&DownloadRow]) {
 
     // Header row: toggle + name + right-aligned status badge.
     ui.horizontal(|ui| {
-        let arrow = if is_open { "▾" } else { "▸" };
-        if ui.small_button(arrow).clicked() {
+        if collapse_toggle(ui, is_open).clicked() {
             ui.data_mut(|data| {
                 let open = data.get_temp_mut_or_insert_with(toggle_id, || true);
                 *open = !*open;
