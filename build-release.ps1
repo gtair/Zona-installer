@@ -88,14 +88,3 @@ if ($SignKey) {
 }
 
 Write-Host "Success! Created $zipName" -ForegroundColor Green
-
-Write-Host ""
-Write-Host "SHA-256 (for Microsoft Threat Intelligence submission):" -ForegroundColor Cyan
-$shippedUpdate = Join-Path $installerDir "dependencies\update.exe"
-$shippedInstaller = Join-Path $installerDir "zona-installer.exe"
-if (Test-Path $shippedUpdate) {
-    Write-Host ("  update.exe        " + (Get-FileHash $shippedUpdate -Algorithm SHA256).Hash)
-}
-if (Test-Path $shippedInstaller) {
-    Write-Host ("  zona-installer.exe " + (Get-FileHash $shippedInstaller -Algorithm SHA256).Hash)
-}
