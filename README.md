@@ -19,7 +19,7 @@ Installs the full Zona modpack in one go and keeps it updated. WINDOWS ONLY!
 
 1. Download the zip from the latest release and extract it.
 2. Run `zona-installer.exe`.
-3. Windows will probably warn you. See [antivirus and SmartScreen](#antivirus-and-smartscreen), then accept the UAC prompt.
+3. Windows will possibly warn you. See [antivirus and SmartScreen](#antivirus-and-smartscreen), then accept the UAC prompt.
 4. Pick the drive. It installs to `<drive>:\Zona` and moves itself there, so the folder you extracted is temporary.
 5. Pick what you want and confirm.
 6. Wait for the downloads.
@@ -112,7 +112,7 @@ In the discord. Include the error id, the newest log from `<drive>:\Zona\install
 
 ## Credits
 
-- Zona modpack by [DrakoMT](https://www.youtube.com/@DrakoMT), installer and website by [Gtair](https://gtair.dev)
+- Zona modpack by [DrakoMT](https://www.youtube.com/@DrakoMT), installer by [Gtair](https://gtair.dev)
 - S.T.A.L.K.E.R. Anomaly by the Anomaly team, modded exes from [xray-monolith](https://github.com/themrdemonized/xray-monolith), Mod Organizer 2 by the MO2 team
 - Bundles [7-Zip](https://7-zip.org) and [aria2](https://aria2.github.io)
 
