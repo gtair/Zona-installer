@@ -14,6 +14,9 @@ Installs the full Zona modpack in one go and keeps it updated. WINDOWS ONLY!
 
 ## Installation
 
+> [!TIP]
+> watch [this video](https://www.youtube.com/watch?v=3l3X_MNMb3w&) if you are too lazy to read
+
 1. Download the zip from the latest release and extract it.
 2. Run `zona-installer.exe`.
 3. Windows will probably warn you. See [antivirus and SmartScreen](#antivirus-and-smartscreen), then accept the UAC prompt.
@@ -53,13 +56,13 @@ Some AVs also quarantine files the installer downloads, sometimes without tellin
 
 ### Downloads stuck or Failed
 
-- The base game is a torrent. A VPN or ISP that blocks torrent traffic will stall it with no useful error.
+- `anomaly.7z` is a torrent. A VPN or ISP that blocks torrent traffic will stall it with no useful error.
 - `aria2c` retries and resumes. A `.aria2` file next to a download means it's still incomplete.
 - Anything that's already finished is hash checked and skipped, so just running it again is safe.
 - Wrong URL or reason: `<drive>:\Zona\installer\logs\aria2c.log`
 
 > [!TIP]
-> If the base game won't come down, get the official Anomaly 1.5.3 full archive from [moddb](https://www.moddb.com/mods/stalker-anomaly/downloads/stalker-anomaly-153), put it in `<drive>:\Zona\installer\downloads` and name it `anomaly.7z`. The installer hash checks it and only re-downloads if it doesn't match.
+> If `anomaly.7z` won't come down, get the official Anomaly 1.5.3 full archive from [moddb](https://www.moddb.com/mods/stalker-anomaly/downloads/stalker-anomaly-153), put it in `<drive>:\Zona\installer\downloads` and name it `anomaly.7z`. The installer hash checks it and only re-downloads if it doesn't match.
 
 ### Installation failed
 
